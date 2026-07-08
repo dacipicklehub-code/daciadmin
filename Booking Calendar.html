@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Booking Calendar - DACI Pickle Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="icon" href="logo.jpeg" type="image/jpeg" />
+  <style>
+    :root {
+      --bg: #f6fff8;
+      --surface: #ffffff;
+      --surface-soft: #f4fff7;
+      --text-primary: #1a1a1a;
+      --text-secondary: #4a4a4a;
+      --accent: #22c55e;
+      --accent-deep: #15803d;
+      --border: rgba(34,197,94,0.18);
+      --success: #16a34a;
+      --warning: #f59e0b;
+      --glow-pink: rgba(34,197,94,0.16);
+      --glow-mint: rgba(74,222,128,0.12);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: radial-gradient(circle at 12% 10%, var(--glow-pink) 0%, transparent 18%),
+                  radial-gradient(circle at 88% 80%, var(--glow-mint) 0%, transparent 22%),
+                  linear-gradient(180deg, #f9fff9 0%, #eefcf2 100%);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .page {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.97);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: 0 24px 70px rgba(34, 197, 94, 0.12);
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 28px 26px;
+      gap: 12px;
+      border-bottom: 1px solid rgba(34,197,94,0.14);
+      background: rgba(244, 255, 247, 0.9);
+      border-top-left-radius: 20px;
+      border-top-right-radius: 20px;
+    }
+
+    .topbar h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 2rem;
+      letter-spacing: -0.6px;
+      margin-bottom: 4px;
+    }
+
+    .topbar p {
+      color: var(--text-secondary);
+      margin-top: 4px;
+      font-size: 0.95rem;
+    }
+
+    .btn {
+      border: none;
+      padding: 12px 18px;
+      border-radius: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      color: white;
+      background: linear-gradient(135deg, var(--accent-deep), var(--accent));
+      box-shadow: 0 18px 30px rgba(236,72,153,0.18);
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 20px 34px rgba(236,72,153,0.22);
+    }
+
+    .content {
+      display: none;
+    }
+
+    .schedule-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin: 0 0 18px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .schedule-header-left {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .schedule-label {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .schedule-summary {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .schedule-input {
+      width: 160px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      color: var(--text-primary);
+      font-family: 'Inter', sans-serif;
+    }
+
+    .btn-secondary {
+      background: rgba(255,255,255,0.06);
+      color: var(--text-primary);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.09);
+    }
+
+    .schedule-card {
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid rgba(34,197,94,0.16);
+      border-radius: 28px;
+      padding: 24px;
+      box-shadow: 0 24px 70px rgba(34, 197, 94, 0.09);
+      backdrop-filter: blur(16px);
+      margin: 20px;
+    }
+
+    .schedule-table {
+      display: grid;
+      gap: 14px;
+      overflow-x: auto;
+      padding-bottom: 10px;
+      width: 100%;
+    }
+
+    .slot-header,
+    .slot-row {
+      display: grid;
+      grid-template-columns: 120px minmax(160px, 1fr) minmax(160px, 1fr);
+      gap: 16px;
+      align-items: stretch;
+      min-width: 100%;
+      width: 100%;
+      grid-auto-rows: minmax(88px, auto);
+    }
+
+    .slot-header {
+      padding: 18px 16px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+    }
+
+    .slot-cell {
+      min-width: 0;
+      padding: 0;
+      background: transparent;
+      border: none;
+      overflow: hidden;
+      display: flex;
+      align-items: stretch;
+      justify-content: stretch;
+    }
+
+    .slot-cell.time-cell {
+      padding: 16px 18px;
+      min-width: 140px;
+      justify-content: center;
+      background: rgba(255,255,255,0.05);
+      border-radius: 18px;
+    }
+
+    .slot-cell > .booking-slot,
+    .slot-cell > .available-cell {
+      width: 100%;
+      min-height: 100%;
+      padding: 18px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      position: relative;
+      z-index: 0;
+    }
+
+    .slot-cell > .available-cell {
+      background: rgba(255,255,255,0.02);
+      border: 1px dashed rgba(255,255,255,0.08);
+      color: var(--text-secondary);
+      align-items: center;
+    }
+
+    .time-cell {
+      min-width: 160px;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .slot-heading {
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      background: rgba(255,255,255,0.05);
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .slot-row:hover .slot-cell > .booking-slot {
+      transform: translateY(-1px);
+    }
+
+    .slot-row:hover .slot-cell > .booking-slot {
+      transform: translateY(-1px);
+    }
+
+    .court-columns,
+    .court-panel,
+    .court-title {
+      display: none;
+    }
+
+    .booking-slot {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 90px;
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      border: none;
+      box-shadow: none;
+    }
+
+    .booking-slot h4 {
+      margin: 0;
+      font-size: 0.94rem;
+      color: white;
+      letter-spacing: -0.02em;
+    }
+
+    .booking-slot .slot-meta {
+      color: var(--text-secondary);
+      font-size: 0.72rem;
+      display: grid;
+      gap: 4px;
+    }
+
+    .booking-slot .slot-meta span {
+      display: block;
+      line-height: 1.3;
+    }
+
+    .booking-slot .slot-meta span:first-child {
+      color: var(--text-primary);
+      font-size: 0.84rem;
+      font-weight: 600;
+    }
+
+    .available-cell {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-secondary);
+      background: rgba(255,255,255,0.02);
+      border: 1px dashed rgba(255,255,255,0.08);
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 12px;
+      }
+      .page {
+        margin: 0;
+        width: 100%;
+        border-radius: 0;
+      }
+      .schedule-card {
+        margin: 0;
+        width: 100%;
+        padding: 18px 14px 20px;
+        border-radius: 0 0 20px 20px;
+      }
+      .content { grid-template-columns: 1fr; }
+      .schedule-table {
+        display: block;
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 10px;
+      }
+      .slot-row,
+      .slot-header {
+        display: grid;
+        grid-template-columns: 76px minmax(104px, 1fr) minmax(104px, 1fr);
+        gap: 16px;
+        min-width: 340px;
+      }
+      .slot-header {
+        padding: 10px 8px;
+        border-radius: 16px;
+      }
+      .slot-heading,
+      .slot-cell {
+        padding: 0;
+      }
+      .slot-heading {
+        font-size: 0.68rem;
+        text-align: center;
+        padding: inherit;
+      }
+      .slot-cell {
+        width: 100%;
+        min-width: 0;
+      }
+      .slot-cell.time-cell {
+        padding: 16px 18px;
+        min-width: 80px;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 18px;
+      }
+      .slot-cell > .booking-slot,
+      .slot-cell > .available-cell {
+        padding: 8px;
+      }
+      .time-cell {
+        min-width: 0;
+        white-space: normal;
+        word-break: break-word;
+        line-height: 1.1;
+        font-size: 0.72rem;
+      }
+      .booking-slot {
+        min-height: 50px;
+        gap: 6px;
+      }
+      .booking-slot h4 {
+        font-size: 0.72rem;
+      }
+      .booking-slot .slot-meta {
+        font-size: 0.62rem;
+      }
+      .booking-slot .slot-meta span:first-child {
+        font-size: 0.78rem;
+      }
+      .booking-slot .slot-meta span {
+        line-height: 1.2;
+      }
+      .topbar h1 {
+        font-size: 1.35rem;
+      }
+      .schedule-summary {
+        font-size: 0.78rem;
+      }
+      .schedule-input,
+      .header-actions button,
+      .btn {
+        font-size: 0.78rem;
+      }
+      .btn {
+        padding: 6px 8px;
+      }
+      .schedule-input {
+        padding: 8px 10px;
+      }
+      .topbar {
+        gap: 12px;
+      }
+      .header-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 8px;
+      }
+      .header-actions #refreshBtn {
+        order: 1;
+        margin-left: auto;
+      }
+      .schedule-input {
+        flex: 1 1 100%;
+        min-width: 120px;
+      }
+      .schedule-summary {
+        font-size: 0.88rem;
+      }
+      .header-actions button,
+      .btn {
+        font-size: 0.85rem;
+        padding: 8px 10px;
+      }
+      .schedule-table::-webkit-scrollbar {
+        height: 8px;
+      }
+      .schedule-table::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .schedule-table::-webkit-scrollbar-thumb {
+        background: rgba(255,255,255,0.15);
+        border-radius: 999px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <div>
+        <h1>Booking Calendar</h1>
+        <p>View scheduled bookings at a glance.</p>
+      </div>
+    </div>
+
+    <div class="schedule-card">
+        <div class="schedule-header">
+          <div class="schedule-header-left">
+            <div class="schedule-label">Booking Schedule</div>
+            <div class="schedule-summary" id="scheduleSummary">Loading bookings...</div>
+          </div>
+          <div class="header-actions">
+            <button class="btn-secondary" id="prevDayBtn">←</button>
+            <button class="btn-secondary" id="todayBtn">Today</button>
+            <button class="btn-secondary" id="nextDayBtn">→</button>
+            <input type="date" id="scheduleDate" class="schedule-input" />
+            <button class="btn" id="refreshBtn">Refresh</button>
+          </div>
+        </div>
+
+        <div class="schedule-table" id="scheduleTable"></div>
+      </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/supabase-config.js"></script>
+  <script>
+    let bookings = [];
+    let selectedDate = null;
+    let supabaseClient = null;
+
+    const scheduleDateInput = document.getElementById('scheduleDate');
+    const scheduleSummary = document.getElementById('scheduleSummary');
+    const scheduleTable = document.getElementById('scheduleTable');
+
+    function formatDate(dateString) {
+      if (!dateString) return '—';
+      const date = new Date(dateString + 'T00:00:00');
+      return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    }
+
+    function getBookingsForDate(dateKey) {
+      return bookings.filter(item => item.booking_date === dateKey);
+    }
+
+    function parseHour(timeValue) {
+      if (!timeValue) return null;
+      const text = timeValue.toString().trim();
+      const rangeParts = text.split('-').map(part => part.trim());
+      const startText = rangeParts[0] || text;
+      const match = startText.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i);
+      if (!match) return null;
+      let hour = parseInt(match[1], 10);
+      const minutes = parseInt(match[2] || '0', 10);
+      const period = (match[3] || '').toUpperCase();
+      if (period === 'PM' && hour < 12) hour += 12;
+      if (period === 'AM' && hour === 12) hour = 0;
+      return hour;
+    }
+
+    function formatTimeRange(hour) {
+      const start = new Date();
+      start.setHours(hour, 0, 0, 0);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+      return `${start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} - ${end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    }
+
+    function isPastSlot(dateKey, hour) {
+      const today = new Date();
+      const slotDate = new Date(dateKey + 'T00:00:00');
+      if (slotDate < new Date(today.getFullYear(), today.getMonth(), today.getDate())) {
+        return true;
+      }
+      if (slotDate > new Date(today.getFullYear(), today.getMonth(), today.getDate())) {
+        return false;
+      }
+      return hour < today.getHours();
+    }
+
+    function renderSchedule(dateKey) {
+      const items = getBookingsForDate(dateKey);
+      const label = formatDate(dateKey);
+      const scheduleTable = document.getElementById('scheduleTable');
+
+      scheduleSummary.textContent = items.length
+        ? `Showing ${items.length} booking${items.length > 1 ? 's' : ''} for ${label}`
+        : `No bookings for ${label}`;
+
+      const courtOne = items.filter(item => {
+        const court = (item.court || item.court_name || '').toString().toLowerCase();
+        return court.includes('court one') || court.includes('court1') || court === '1';
+      });
+      const courtTwo = items.filter(item => {
+        const court = (item.court || item.court_name || '').toString().toLowerCase();
+        return court.includes('court two') || court.includes('court2') || court === '2';
+      });
+
+      const rows = [];
+      const makeCell = (booking, hour, timeLabel) => {
+        if (!booking) {
+          if (isPastSlot(dateKey, hour)) {
+            return '<div class="available-cell">Past</div>';
+          }
+          return '<div class="available-cell">Available</div>';
+        }
+        return `
+          <div class="booking-slot">
+            <h4>${booking.customer_name || 'Customer'}</h4>
+            <div class="slot-meta">
+              <span>${booking.phone_number || booking.phone || 'No Phone'}</span>
+              <span>${booking.reference_code || 'No Ref'}</span>
+            </div>
+          </div>
+        `;
+      };
+
+      for (let hour = 0; hour < 24; hour++) {
+        const timeLabel = formatTimeRange(hour);
+        const oneBooking = courtOne.find(item => parseHour(item.time_slot || item.booking_time) === hour);
+        const twoBooking = courtTwo.find(item => parseHour(item.time_slot || item.booking_time) === hour);
+
+        rows.push(`
+          <div class="slot-row">
+            <div class="slot-cell time-cell">${timeLabel}</div>
+            <div class="slot-cell">${makeCell(oneBooking, hour, timeLabel)}</div>
+            <div class="slot-cell">${makeCell(twoBooking, hour, timeLabel)}</div>
+          </div>
+        `);
+      }
+
+      scheduleTable.innerHTML = `
+        <div class="slot-header">
+          <div class="slot-heading">Time</div>
+          <div class="slot-heading">Court One</div>
+          <div class="slot-heading">Court Two</div>
+        </div>
+        ${rows.join('')}
+      `;
+    }
+
+    async function loadBookings() {
+      scheduleSummary.textContent = 'Loading bookings...';
+      scheduleTable.innerHTML = '<div class="slot-header"><div class="slot-heading">Time</div><div class="slot-heading">Court One</div><div class="slot-heading">Court Two</div></div>';
+
+      const { data, error } = await supabaseClient
+        .from('bookings')
+        .select('id, reference_code, customer_name, phone_number, booking_date, time_slot, booking_time, court, court_name, status')
+        .order('booking_date', { ascending: true });
+
+      if (error) {
+        console.error('Failed to load bookings:', error);
+        scheduleSummary.textContent = 'Unable to load bookings';
+        scheduleTable.innerHTML = '<div class="slot-cell">Unable to load bookings</div><div class="slot-cell"></div><div class="slot-cell"></div>';
+        return;
+      }
+
+      bookings = (data || []).filter(item => item.booking_date);
+      const today = new Date();
+      const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      selectedDate = todayKey;
+      scheduleDateInput.value = todayKey;
+      renderSchedule(todayKey);
+    }
+
+    async function initSchedule() {
+      const supabaseConfig = window.SUPABASE_CONFIG || {};
+      const SUPABASE_URL = supabaseConfig.url || 'https://cznckdkethhvzpifnury.supabase.co';
+      const SUPABASE_ANON_KEY = supabaseConfig.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN6bmNrZGtldGhodnpwaWZudXJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1MjY2OTUsImV4cCI6MjA5ODEwMjY5NX0.6FB0jvc7orYndOfFsT9YLuDnVVrHy2CyqTyasq0iZj8';
+
+      if (!window.supabase) {
+        scheduleSummary.textContent = 'Supabase library missing';
+        scheduleTable.innerHTML = '<div class="slot-cell">Supabase library missing</div>';
+        return;
+      }
+
+      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      const prevDayBtn = document.getElementById('prevDayBtn');
+      const nextDayBtn = document.getElementById('nextDayBtn');
+      const todayBtn = document.getElementById('todayBtn');
+      const refreshBtn = document.getElementById('refreshBtn');
+
+      scheduleDateInput.addEventListener('change', () => {
+        selectedDate = scheduleDateInput.value;
+        if (selectedDate) {
+          renderSchedule(selectedDate);
+        }
+      });
+
+      prevDayBtn.addEventListener('click', () => {
+        const current = new Date(scheduleDateInput.value);
+        current.setDate(current.getDate() - 1);
+        selectedDate = current.toISOString().slice(0, 10);
+        scheduleDateInput.value = selectedDate;
+        renderSchedule(selectedDate);
+      });
+
+      nextDayBtn.addEventListener('click', () => {
+        const current = new Date(scheduleDateInput.value);
+        current.setDate(current.getDate() + 1);
+        selectedDate = current.toISOString().slice(0, 10);
+        scheduleDateInput.value = selectedDate;
+        renderSchedule(selectedDate);
+      });
+
+      todayBtn.addEventListener('click', () => {
+        const today = new Date();
+        selectedDate = today.toISOString().slice(0, 10);
+        scheduleDateInput.value = selectedDate;
+        renderSchedule(selectedDate);
+      });
+
+      refreshBtn.addEventListener('click', async () => {
+        await loadBookings();
+      });
+
+      await loadBookings();
+    }
+
+    initSchedule();
+  </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "pickle-social-admin",
+  "version": "1.0.0",
+  "description": "Pickle Social Admin Dashboard with Messenger Integration",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.38.0"
+  },
+  "devDependencies": {
+    "jest": "^29.6.0",
+    "node-fetch": "^3.3.1"
+  },
+  "scripts": {
+    "start": "npx http-server . -p 3000",
+    "test": "jest --testEnvironment=node"
+  },
+  "engines": {
+    "node": "24.x"
+  }
+}
