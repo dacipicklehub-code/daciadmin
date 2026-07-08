@@ -1,4 +1,4 @@
-﻿// admin-dashboard.js
+// admin-dashboard.js
 let supabaseClient = null;
 let allBookings = [];
 let filteredBookings = [];
@@ -1079,7 +1079,7 @@ function updateEarnings() {
   console.log('Earnings updated:', { todayEarnings, weeklyEarnings, monthlyEarnings, pendingAmount, pendingCount: pendingBookings.length, selectedDate: formatDateKey(selectedDate), weekStart: formatDateKey(weekStart), weekEnd: formatDateKey(weekEnd), monthStart: formatDateKey(monthStart), monthEnd: formatDateKey(monthEnd) });
 }
 
-const earningsModalPassword = 'picklesocial26';
+const earningsModalPassword = 'dacipickle26';
 
 function openEarningsModalWithPassword() {
   const modal = document.getElementById('earningsPasswordModal');
