@@ -3,24 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Booking Calendar - DACI Pickle Hub</title>
+  <title>Booking Calendar - Daci Pickle Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="icon" href="logo.jpeg" type="image/jpeg" />
   <style>
     :root {
-      --bg: #f6fff8;
-      --surface: #ffffff;
-      --surface-soft: #f4fff7;
-      --text-primary: #1a1a1a;
-      --text-secondary: #4a4a4a;
-      --accent: #22c55e;
-      --accent-deep: #15803d;
-      --border: rgba(34,197,94,0.18);
-      --success: #16a34a;
+      --bg: #08090c;
+      --surface: #0f1319;
+      --surface-soft: #171c25;
+      --text-primary: #f3f4f6;
+      --text-secondary: #94a3b8;
+      --accent: #ec4899;
+      --accent-deep: #be185d;
+      --border: rgba(255,255,255,0.08);
+      --success: #10b981;
       --warning: #f59e0b;
-      --glow-pink: rgba(34,197,94,0.16);
-      --glow-mint: rgba(74,222,128,0.12);
+      --training-cyan: #22d3ee;
+      --training-cyan-soft: rgba(34, 211, 238, 0.12);
+      --glow-pink: rgba(236,72,153,0.16);
+      --glow-mint: rgba(139,195,74,0.12);
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -29,7 +31,7 @@
       font-family: 'Inter', sans-serif;
       background: radial-gradient(circle at 12% 10%, var(--glow-pink) 0%, transparent 18%),
                   radial-gradient(circle at 88% 80%, var(--glow-mint) 0%, transparent 22%),
-                  linear-gradient(180deg, #f9fff9 0%, #eefcf2 100%);
+                  linear-gradient(180deg, #07080b 0%, #181d27 100%);
       color: var(--text-primary);
       min-height: 100vh;
       padding: 24px;
@@ -38,10 +40,10 @@
     .page {
       max-width: 1200px;
       margin: 0 auto;
-      background: rgba(255, 255, 255, 0.97);
+      background: rgba(15, 19, 25, 0.93);
       border: 1px solid var(--border);
       border-radius: 20px;
-      box-shadow: 0 24px 70px rgba(34, 197, 94, 0.12);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
       overflow: hidden;
     }
 
@@ -51,8 +53,8 @@
       align-items: flex-start;
       padding: 28px 26px;
       gap: 12px;
-      border-bottom: 1px solid rgba(34,197,94,0.14);
-      background: rgba(244, 255, 247, 0.9);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
       border-top-left-radius: 20px;
       border-top-right-radius: 20px;
     }
@@ -118,6 +120,30 @@
     .schedule-summary {
       color: var(--text-secondary);
       font-size: 0.95rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+    }
+
+    .schedule-summary span {
+      white-space: nowrap;
+    }
+
+    .schedule-summary strong {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .schedule-summary .court-one-total strong {
+      color: #fbbf24;
+    }
+
+    .schedule-summary .training-court-total strong {
+      color: var(--training-cyan);
+    }
+
+    .schedule-summary .overall-total strong {
+      color: #fb7185;
     }
 
     .header-actions {
@@ -126,6 +152,49 @@
       gap: 8px;
       flex-wrap: wrap;
     }
+
+    .block-times-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(0, 0, 0, 0.7);
+    }
+
+    .block-times-panel {
+      width: min(720px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+    }
+
+    .block-times-panel header,
+    .block-times-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .block-times-panel h2 { font-size: 1.25rem; }
+    .block-times-panel label { display: block; margin: 18px 0 8px; color: var(--text-secondary); }
+    .block-times-panel input[type="date"] { padding: 10px; background: var(--surface-soft); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; }
+    .block-times-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+    .block-time-option { display: flex !important; align-items: center; gap: 12px; margin: 0 !important; padding: 14px 16px; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; cursor: pointer; transition: all 0.22s ease; background: rgba(255,255,255,0.02); font-weight: 500; }
+    .block-time-option:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.12); }
+    .block-time-option input { appearance: none; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.2); border-radius: 6px; cursor: pointer; transition: all 0.22s ease; background: rgba(255,255,255,0.03); }
+    .block-time-option input:hover { border-color: rgba(255,255,255,0.35); }
+    .block-time-option input:checked { background: #dc2626; border-color: #dc2626; position: relative; }
+    .block-time-option input:checked::after { content: '✓'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 12px; font-weight: bold; }
+    .block-time-option:has(input:checked) { background: rgba(220, 38, 38, 0.08); border-color: rgba(220, 38, 38, 0.3); }
+    .block-times-note { color: var(--text-secondary); font-size: 0.85rem; }
+    .close-block-times { border: 0; background: transparent; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer; }
 
     .schedule-input {
       width: 160px;
@@ -148,11 +217,11 @@
     }
 
     .schedule-card {
-      background: rgba(255, 255, 255, 0.95);
-      border: 1px solid rgba(34,197,94,0.16);
+      background: rgba(15, 19, 25, 0.92);
+      border: 1px solid rgba(255,255,255,0.08);
       border-radius: 28px;
       padding: 24px;
-      box-shadow: 0 24px 70px rgba(34, 197, 94, 0.09);
+      box-shadow: 0 32px 90px rgba(0, 0, 0, 0.30);
       backdrop-filter: blur(16px);
       margin: 20px;
     }
@@ -163,6 +232,42 @@
       overflow-x: auto;
       padding-bottom: 10px;
       width: 100%;
+    }
+
+    .bottom-day-navigation {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .bottom-day-navigation button {
+      min-width: 152px;
+      padding: 11px 16px;
+      border-radius: 10px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+    }
+
+    .bottom-day-navigation button:hover {
+      transform: translateY(-1px);
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(255,255,255,0.2);
+    }
+
+    .bottom-day-navigation button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    @media (max-width: 520px) {
+      .bottom-day-navigation button {
+        min-width: 0;
+        flex: 1;
+        padding-inline: 10px;
+      }
     }
 
     .slot-header,
@@ -245,6 +350,25 @@
       padding: 12px 14px;
       border-radius: 14px;
       border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .slot-heading.training-court-heading {
+      color: var(--training-cyan);
+      background: var(--training-cyan-soft);
+      border-color: rgba(34, 211, 238, 0.35);
+    }
+
+    .slot-cell.training-court-cell {
+      background: rgba(34, 211, 238, 0.035);
+      border-radius: 18px;
+    }
+
+    .training-court-cell .available-cell {
+      border-color: rgba(34, 211, 238, 0.22);
+    }
+
+    .training-court-cell .booking-slot {
+      border-color: rgba(34, 211, 238, 0.35);
     }
 
     .slot-row:hover .slot-cell > .booking-slot {
@@ -470,6 +594,27 @@
         </div>
 
         <div class="schedule-table" id="scheduleTable"></div>
+        <div class="bottom-day-navigation" aria-label="Change booking date">
+          <button class="btn-secondary" id="prevDayBottomBtn" type="button">← Previous date</button>
+          <button class="btn-secondary" id="nextDayBottomBtn" type="button">Next date →</button>
+        </div>
+      </div>
+
+      <div class="block-times-modal" id="blockTimesModal" role="dialog" aria-modal="true" aria-labelledby="blockTimesTitle">
+        <div class="block-times-panel">
+          <header>
+            <h2 id="blockTimesTitle">Block timeslots</h2>
+            <button class="close-block-times" id="closeBlockTimesBtn" aria-label="Close">×</button>
+          </header>
+          <label for="blockTimesDate">Date</label>
+          <input type="date" id="blockTimesDate" />
+          <p class="block-times-note">Select one or more court times to make unavailable for bookings.</p>
+          <div id="blockTimesOptions" class="block-times-options"></div>
+          <div class="block-times-footer">
+            <button class="btn-secondary" id="cancelBlockTimesBtn">Cancel</button>
+            <button class="btn" id="saveBlockTimesBtn">Save blocked times</button>
+          </div>
+        </div>
       </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -478,10 +623,66 @@
     let bookings = [];
     let selectedDate = null;
     let supabaseClient = null;
+    let blockedTimes = [];
 
     const scheduleDateInput = document.getElementById('scheduleDate');
     const scheduleSummary = document.getElementById('scheduleSummary');
     const scheduleTable = document.getElementById('scheduleTable');
+    const blockTimesModal = document.getElementById('blockTimesModal');
+    const blockTimesDateInput = document.getElementById('blockTimesDate');
+    const blockTimesOptions = document.getElementById('blockTimesOptions');
+
+    function formatSlot(hour) {
+      const start = new Date(2000, 0, 1, hour);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+      const options = { hour: 'numeric', minute: '2-digit' };
+      return `${start.toLocaleTimeString('en-US', options)} - ${end.toLocaleTimeString('en-US', options)}`;
+    }
+
+    function openBlockTimes() {
+      blockTimesDateInput.value = selectedDate || scheduleDateInput.value;
+      blockTimesModal.style.display = 'flex';
+      renderBlockTimeOptions();
+    }
+
+    function closeBlockTimes() {
+      blockTimesModal.style.display = 'none';
+    }
+
+    function renderBlockTimeOptions() {
+      const courtKey = court => isCourtTwo(court) ? 'Court 2' : 'Court One';
+      const booked = new Set(bookings.map(item => `${courtKey(item.court || item.court_name)}|${parseHour(item.time_slot || item.booking_time)}`));
+      const blocked = new Set(blockedTimes.map(item => `${courtKey(item.court)}|${parseHour(item.time_slot)}`));
+      blockTimesOptions.innerHTML = '';
+      ['Court One', 'Court 2'].forEach(court => {
+        for (let hour = 0; hour < 24; hour++) {
+          const key = `${courtKey(court)}|${hour}`;
+          const isBooked = booked.has(key);
+          const label = document.createElement('label');
+          label.className = 'block-time-option';
+          label.innerHTML = `<input type="checkbox" data-court="${court}" value="${hour}"${blocked.has(key) ? ' checked' : ''}${isBooked ? ' disabled' : ''}>${court} · ${formatSlot(hour)}${isBooked ? ' · Booked' : ''}`;
+          blockTimesOptions.appendChild(label);
+        }
+      });
+    }
+
+    async function saveBlockTimes() {
+      const date = blockTimesDateInput.value;
+      if (!date) return;
+      const selected = [...blockTimesOptions.querySelectorAll('input:checked')].map(input => ({
+        blocked_date: date,
+        court: input.dataset.court,
+        time_slot: formatSlot(Number(input.value))
+      }));
+      const { error: deleteError } = await supabaseClient.from('blocked_time_slots').delete().eq('blocked_date', date);
+      if (deleteError) return alert('Could not update blocked timeslots. Run the Supabase migration first.');
+      if (selected.length) {
+        const { error } = await supabaseClient.from('blocked_time_slots').insert(selected);
+        if (error) return alert('Could not save blocked timeslots.');
+      }
+      if (date === selectedDate) await loadBookings(date);
+      closeBlockTimes();
+    }
 
     function formatDate(dateString) {
       if (!dateString) return '—';
@@ -527,14 +728,16 @@
       return hour < today.getHours();
     }
 
+    function isCourtTwo(value) {
+      const court = String(value || '').trim().toLowerCase();
+      const compact = court.replace(/[\s_-]+/g, '');
+      return court.includes('training') || compact.includes('courttwo') || compact.includes('court2') || compact === '2';
+    }
+
     function renderSchedule(dateKey) {
       const items = getBookingsForDate(dateKey);
       const label = formatDate(dateKey);
       const scheduleTable = document.getElementById('scheduleTable');
-
-      scheduleSummary.textContent = items.length
-        ? `Showing ${items.length} booking${items.length > 1 ? 's' : ''} for ${label}`
-        : `No bookings for ${label}`;
 
       const courtOne = items.filter(item => {
         const court = (item.court || item.court_name || '').toString().toLowerCase();
@@ -542,11 +745,21 @@
       });
       const courtTwo = items.filter(item => {
         const court = (item.court || item.court_name || '').toString().toLowerCase();
-        return court.includes('court two') || court.includes('court2') || court === '2';
+        return isCourtTwo(court);
       });
+
+      scheduleSummary.innerHTML = `
+        <span class="court-one-total">Court 1: <strong>${courtOne.length}</strong></span>
+        <span class="training-court-total">Court 2: <strong>${courtTwo.length}</strong></span>
+        <span class="overall-total">Overall: <strong>${items.length}</strong></span>
+      `;
 
       const rows = [];
       const makeCell = (booking, hour, timeLabel) => {
+        const court = booking?.court || '';
+        if (!booking && blockedTimes.some(item => item.court === court && parseHour(item.time_slot) === hour)) {
+          return '<div class="available-cell">Blocked</div>';
+        }
         if (!booking) {
           if (isPastSlot(dateKey, hour)) {
             return '<div class="available-cell">Past</div>';
@@ -572,8 +785,8 @@
         rows.push(`
           <div class="slot-row">
             <div class="slot-cell time-cell">${timeLabel}</div>
-            <div class="slot-cell">${makeCell(oneBooking, hour, timeLabel)}</div>
-            <div class="slot-cell">${makeCell(twoBooking, hour, timeLabel)}</div>
+            <div class="slot-cell">${oneBooking ? makeCell(oneBooking, hour, timeLabel) : (blockedTimes.some(item => item.court === 'Court One' && parseHour(item.time_slot) === hour) ? '<div class="available-cell">Blocked</div>' : makeCell(oneBooking, hour, timeLabel))}</div>
+            <div class="slot-cell training-court-cell">${twoBooking ? makeCell(twoBooking, hour, timeLabel) : (blockedTimes.some(item => isCourtTwo(item.court) && parseHour(item.time_slot) === hour) ? '<div class="available-cell">Blocked</div>' : makeCell(null, hour, timeLabel))}</div>
           </div>
         `);
       }
@@ -581,20 +794,23 @@
       scheduleTable.innerHTML = `
         <div class="slot-header">
           <div class="slot-heading">Time</div>
-          <div class="slot-heading">Court One</div>
-          <div class="slot-heading">Court Two</div>
+          <div class="slot-heading">Court 1</div>
+          <div class="slot-heading training-court-heading">Court 2</div>
         </div>
         ${rows.join('')}
       `;
     }
 
-    async function loadBookings() {
+    async function loadBookings(dateKey = selectedDate) {
+      if (!dateKey) return;
+
       scheduleSummary.textContent = 'Loading bookings...';
-      scheduleTable.innerHTML = '<div class="slot-header"><div class="slot-heading">Time</div><div class="slot-heading">Court One</div><div class="slot-heading">Court Two</div></div>';
+      scheduleTable.innerHTML = '<div class="slot-header"><div class="slot-heading">Time</div><div class="slot-heading">Court 1</div><div class="slot-heading training-court-heading">Court 2</div></div>';
 
       const { data, error } = await supabaseClient
         .from('bookings')
         .select('id, reference_code, customer_name, phone_number, booking_date, time_slot, booking_time, court, court_name, status')
+        .eq('booking_date', dateKey)
         .order('booking_date', { ascending: true });
 
       if (error) {
@@ -604,18 +820,29 @@
         return;
       }
 
-      bookings = (data || []).filter(item => item.booking_date);
-      const today = new Date();
-      const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-      selectedDate = todayKey;
-      scheduleDateInput.value = todayKey;
-      renderSchedule(todayKey);
+      const { data: blockedRows, error: blockedError } = await supabaseClient
+        .from('blocked_time_slots')
+        .select('court, time_slot')
+        .eq('blocked_date', dateKey);
+      if (blockedError) {
+        console.error('Failed to load blocked times:', blockedError);
+        blockedTimes = [];
+      } else {
+        blockedTimes = blockedRows || [];
+      }
+
+      bookings = (data || [])
+        .filter(item => item.booking_date && item.status !== 'pending');
+
+      selectedDate = dateKey;
+      scheduleDateInput.value = dateKey;
+      renderSchedule(dateKey);
     }
 
     async function initSchedule() {
       const supabaseConfig = window.SUPABASE_CONFIG || {};
-      const SUPABASE_URL = supabaseConfig.url || 'https://cznckdkethhvzpifnury.supabase.co';
-      const SUPABASE_ANON_KEY = supabaseConfig.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN6bmNrZGtldGhodnpwaWZudXJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1MjY2OTUsImV4cCI6MjA5ODEwMjY5NX0.6FB0jvc7orYndOfFsT9YLuDnVVrHy2CyqTyasq0iZj8';
+      const SUPABASE_URL = supabaseConfig.url || 'https://mpkmtcdsubopnrpyqwel.supabase.co';
+      const SUPABASE_ANON_KEY = supabaseConfig.anonKey || 'sb_publishable_UL5Bm_SqkJTmRSmcO_NdRA_1qoOksRk';
 
       if (!window.supabase) {
         scheduleSummary.textContent = 'Supabase library missing';
@@ -626,44 +853,54 @@
       supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
       const prevDayBtn = document.getElementById('prevDayBtn');
       const nextDayBtn = document.getElementById('nextDayBtn');
+      const prevDayBottomBtn = document.getElementById('prevDayBottomBtn');
+      const nextDayBottomBtn = document.getElementById('nextDayBottomBtn');
       const todayBtn = document.getElementById('todayBtn');
       const refreshBtn = document.getElementById('refreshBtn');
 
-      scheduleDateInput.addEventListener('change', () => {
+      document.getElementById('closeBlockTimesBtn').addEventListener('click', closeBlockTimes);
+      document.getElementById('cancelBlockTimesBtn').addEventListener('click', closeBlockTimes);
+      document.getElementById('saveBlockTimesBtn').addEventListener('click', saveBlockTimes);
+      blockTimesDateInput.addEventListener('change', async () => {
+        if (!blockTimesDateInput.value) return;
+        await loadBookings(blockTimesDateInput.value);
+        renderBlockTimeOptions();
+      });
+
+      scheduleDateInput.addEventListener('change', async () => {
         selectedDate = scheduleDateInput.value;
         if (selectedDate) {
-          renderSchedule(selectedDate);
+          await loadBookings(selectedDate);
         }
       });
 
-      prevDayBtn.addEventListener('click', () => {
-        const current = new Date(scheduleDateInput.value);
-        current.setDate(current.getDate() - 1);
+      const changeDay = async (step) => {
+        const current = new Date(scheduleDateInput.value || new Date());
+        current.setDate(current.getDate() + step);
         selectedDate = current.toISOString().slice(0, 10);
         scheduleDateInput.value = selectedDate;
-        renderSchedule(selectedDate);
-      });
+        await loadBookings(selectedDate);
+      };
 
-      nextDayBtn.addEventListener('click', () => {
-        const current = new Date(scheduleDateInput.value);
-        current.setDate(current.getDate() + 1);
-        selectedDate = current.toISOString().slice(0, 10);
-        scheduleDateInput.value = selectedDate;
-        renderSchedule(selectedDate);
-      });
+      prevDayBtn.addEventListener('click', () => changeDay(-1));
+      nextDayBtn.addEventListener('click', () => changeDay(1));
+      prevDayBottomBtn.addEventListener('click', () => changeDay(-1));
+      nextDayBottomBtn.addEventListener('click', () => changeDay(1));
 
-      todayBtn.addEventListener('click', () => {
+      todayBtn.addEventListener('click', async () => {
         const today = new Date();
         selectedDate = today.toISOString().slice(0, 10);
         scheduleDateInput.value = selectedDate;
-        renderSchedule(selectedDate);
+        await loadBookings(selectedDate);
       });
 
       refreshBtn.addEventListener('click', async () => {
-        await loadBookings();
+        await loadBookings(selectedDate || new Date().toISOString().slice(0, 10));
       });
 
-      await loadBookings();
+      const today = new Date();
+      selectedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      await loadBookings(selectedDate);
     }
 
     initSchedule();

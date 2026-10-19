@@ -1,5 +1,5 @@
 /**
- * Messenger Webhook Handler for Pickle Social
+ * Messenger Webhook Handler for Daci Pickle Hub
  * Handles incoming messages and sends booking status updates
  */
 
@@ -129,7 +129,7 @@ function formatBookingMessage(booking) {
     case 'completed':
       statusEmoji = '✨';
       statusText = 'Completed';
-      message = `Your booking has been completed.\n\nThank you for using DACI Pickle Hub! We hope you enjoyed your game. 🎾`;
+      message = `Your booking has been completed.\n\nThank you for using Daci Pickle Hub! We hope you enjoyed your game. 🎾`;
       break;
     case 'cancelled':
       statusEmoji = '❌';
@@ -223,7 +223,7 @@ async function handleMessage(senderId, text) {
     if (cleanText.includes('HI') || cleanText.includes('HELLO') || cleanText.includes('START')) {
       await sendMessageFn(
         senderId,
-        'Hey! Welcome to DACI Pickle Hub! 🎾\n\nSend us your booking reference to check your booking status.\n\nExample: PKL-ABCD123EFGH',
+        'Hey! Welcome to Daci Pickle Hub! 🎾\n\nSend us your booking reference to check your booking status.\n\nExample: PKL-ABCD123EFGH',
         [
           {
             content_type: 'text',

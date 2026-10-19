@@ -60,7 +60,7 @@ function copyBookingDetailsConfirmation() {
     return `🏸 ${courtName}\n${timesList}`;
   }).join('\n\n');
 
-  const message = `BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for booking with Pickle Social - Cebu! Your reservation has been successfully confirmed. ✅\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Paid: ${totalPaid}\n📅 Date: ${formattedDates}\n\n${bookingLines}\n\nThank you for booking with us! Your reservation has been successfully confirmed.`;
+  const message = `BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for booking with Daci Pickle Hub! Your reservation has been successfully confirmed. ✅\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Paid: ${totalPaid}\n📅 Date: ${formattedDates}\n\n${bookingLines}\n\nThank you for booking with us! Your reservation has been successfully confirmed.`;
 
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(message).then(() => {

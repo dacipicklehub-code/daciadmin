@@ -1,0 +1,1848 @@
+(function(){
+  "use strict";
+
+  /* ---------------- Data (Supabase-backed with local fallback) ---------------- */
+  const CATS = {
+    "Beverages":"#2563EB", "Snacks":"#EC4899", "Rent":"#F59E0B"
+  };
+
+  const DEFAULT_PRODUCTS = [];
+
+  const isRentProduct = p => p.category === "Rent";
+
+  let cart = [];          // {productId, qty}
+  let sales = [];         // completed transactions
+  let voidedSales = [];   // voided transactions
+  let products = [];
+  let stockLogs = [];
+  let saleCounter = 1024;
+  const SALES_PAGE_SIZE = 5;
+  let salesHistoryPage = 1;
+  let activeCategory = "All";
+  let payMethod = "cash";
+  let productSalesDay = "today";
+  let supabaseClient = null;
+  let hasSupabaseData = false;
+  let selectedDates = {Beverages: [], Snacks: [], Rent: []};
+
+  /* ---------------- Helpers ---------------- */
+  const $ = (sel, root=document) => root.querySelector(sel);
+  const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+  const money = n => "₱" + n.toFixed(2);
+  const initials = name => name.split(" ").map(w=>w[0]).slice(0,2).join("").toUpperCase();
+
+  function getProductById(productId){
+    const normalizedId = Number(productId);
+    if (!Number.isFinite(normalizedId) || normalizedId <= 0) return null;
+    return products.find(pp => Number(pp.id) === normalizedId) || null;
+  }
+
+  function getSelectedDatesForCategory(category){
+    const values = selectedDates[category];
+    if (!Array.isArray(values)) return [];
+    return values.filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  }
+
+  function formatSelectedDateLabel(dateValue){
+    if (!dateValue) return "";
+    const [year, month, day] = dateValue.split("-");
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function isSaleInSelectedDates(saleTime, selectedDateValues){
+    if (!selectedDateValues.length) return true;
+    return selectedDateValues.some(dateValue => {
+      const [year, month, day] = dateValue.split("-");
+      const start = new Date(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0);
+      const end = new Date(Number(year), Number(month) - 1, Number(day), 23, 59, 59, 999);
+      return saleTime >= start && saleTime <= end;
+    });
+  }
+
+  function normalizeProduct(item){
+    return {
+      id: Number(item.id || 0),
+      name: item.name || "Unnamed product",
+      sku: item.sku || "",
+      category: item.category || "Beverages",
+      price: Number(item.price || 0),
+      cost: Number(item.cost || 0),
+      stock: Number(item.stock || 0),
+      threshold: Number(item.threshold || 10),
+    };
+  }
+
+  function normalizeSale(item){
+    const isVoided = Boolean(item?.voided || item?.status === "voided");
+    return {
+      id: Number(item.id || 0),
+      time: item.time ? (typeof item.time === "string" ? new Date(item.time) : item.time instanceof Date ? item.time : new Date(item.time)) : new Date(item.created_at || new Date().toISOString()),
+      items: Array.isArray(item.items) ? item.items : [],
+      subtotal: Number(item.subtotal || 0),
+      tax: Number(item.tax || 0),
+      total: Number(item.total || 0),
+      payment: item.payment || "cash",
+      tendered: Number(item.tendered || 0),
+      change: Number(item.change || 0),
+      cashier: item.cashier || "Daci Pickle Hub",
+      reference_code: item.reference_code || null,
+      voided: isVoided,
+      status: item.status || (isVoided ? "voided" : "completed"),
+    };
+  }
+
+  function normalizeStockLog(item){
+    return {
+      id: Number(item.id || 0),
+      product_id: Number(item.product_id || 0),
+      product_name: item.product_name || "Product",
+      previous_stock: Number(item.previous_stock || 0),
+      added_stock: Number(item.added_stock || 0),
+      new_stock: Number(item.new_stock || 0),
+      note: item.note || "",
+      created_at: item.created_at || new Date().toISOString(),
+    };
+  }
+
+  function saveLocalData(){
+    try {
+      localStorage.setItem("countr-pos-products", JSON.stringify(products));
+      localStorage.setItem("countr-pos-sales", JSON.stringify(sales.map(s=>({
+        ...s,
+        time: s.time instanceof Date ? s.time.toISOString() : s.time,
+      }))));
+      localStorage.setItem("countr-pos-stock-logs", JSON.stringify(stockLogs));
+      localStorage.setItem("countr-pos-voided-sales", JSON.stringify(voidedSales.map(s=>({
+        ...s,
+        time: s.time instanceof Date ? s.time.toISOString() : s.time,
+      }))));
+    } catch (err) {
+      console.warn("Unable to save POS data locally", err);
+    }
+  }
+
+  async function getSupabaseClient(){
+    if (supabaseClient) return supabaseClient;
+    const config = window.POS_SUPABASE_CONFIG || {};
+    const url = config.url;
+    const anonKey = config.anonKey;
+    if (!window.supabase || !url || !anonKey) return null;
+    supabaseClient = window.supabase.createClient(url, anonKey);
+    return supabaseClient;
+  }
+
+  const dbConnectionButton = $("#dbConnectionButton");
+  const dbConnectionLabel = $("#dbConnectionLabel");
+  const dbConnectionDetails = $("#dbConnectionDetails");
+  function getDatabaseProjectHost(){
+    const url = window.POS_SUPABASE_CONFIG?.url;
+    try {
+      return url ? new URL(url).host : "Supabase project not configured";
+    } catch (err) {
+      return "Invalid Supabase project URL";
+    }
+  }
+  function setDatabaseConnectionStatus(state, label, details){
+    dbConnectionButton.dataset.state = state;
+    dbConnectionLabel.textContent = label;
+    dbConnectionDetails.textContent = details;
+  }
+  async function checkDatabaseConnection(){
+    dbConnectionButton.disabled = true;
+    setDatabaseConnectionStatus("checking", "Checking…", getDatabaseProjectHost());
+    try {
+      const client = await getSupabaseClient();
+      if (!client) {
+        setDatabaseConnectionStatus("error", "Offline", "Supabase client or POS configuration is missing.");
+        return;
+      }
+      const { error } = await client.from("pos_products").select("id").limit(1);
+      if (error) {
+        console.warn("Supabase connection check failed", error);
+        setDatabaseConnectionStatus("error", "Offline", `${getDatabaseProjectHost()} · ${error.message}`);
+        return;
+      }
+      setDatabaseConnectionStatus("connected", "Connected", `${getDatabaseProjectHost()} · Click to recheck`);
+    } catch (err) {
+      console.warn("Supabase connection check failed", err);
+      setDatabaseConnectionStatus("error", "Offline", `${getDatabaseProjectHost()} · ${err.message || "Connection request failed"}`);
+    } finally {
+      dbConnectionButton.disabled = false;
+    }
+  }
+  dbConnectionButton.addEventListener("click", checkDatabaseConnection);
+
+  async function loadPosData(){
+    try {
+      const storedProducts = localStorage.getItem("countr-pos-products");
+      const storedSales = localStorage.getItem("countr-pos-sales");
+      const storedVoidSales = localStorage.getItem("countr-pos-voided-sales");
+      const storedLogs = localStorage.getItem("countr-pos-stock-logs");
+      if (storedProducts) {
+        try { products = JSON.parse(storedProducts).map(normalizeProduct); } catch (err) { console.warn("Failed to parse saved products", err); }
+      }
+      if (storedSales) {
+        try { sales = JSON.parse(storedSales).map(normalizeSale); } catch (err) { console.warn("Failed to parse saved sales", err); }
+      }
+      if (storedVoidSales) {
+        try { voidedSales = JSON.parse(storedVoidSales).map(normalizeSale); } catch (err) { console.warn("Failed to parse saved voided sales", err); }
+      }
+      if (storedLogs) {
+        try { stockLogs = JSON.parse(storedLogs).map(normalizeStockLog); } catch (err) { console.warn("Failed to parse saved stock logs", err); }
+      }
+    } catch (err) {
+      console.warn("Local storage unavailable", err);
+    }
+
+    setDatabaseConnectionStatus("checking", "Checking…", getDatabaseProjectHost());
+    let client;
+    try {
+      client = await getSupabaseClient();
+    } catch (err) {
+      console.warn("Unable to initialize Supabase POS client", err);
+      setDatabaseConnectionStatus("error", "Offline", `${getDatabaseProjectHost()} · ${err.message || "Client initialization failed"}`);
+    }
+    if (!client) {
+      if (dbConnectionButton.dataset.state !== "error") {
+        setDatabaseConnectionStatus("error", "Offline", "Supabase client or POS configuration is missing.");
+      }
+      saleCounter = Math.max(1024, sales.reduce((max, sale) => Math.max(max, Number(sale.id || 0)), 1024) + 1);
+      saveLocalData();
+      return;
+    }
+
+    try {
+      const { data: remoteProducts, error: productError } = await client.from("pos_products").select("id,name,sku,category,price,cost,stock,threshold").order("id", { ascending: true });
+      if (productError) {
+        console.warn("Unable to load POS products from Supabase", productError);
+        setDatabaseConnectionStatus("error", "Offline", `${getDatabaseProjectHost()} · ${productError.message}`);
+      } else if (Array.isArray(remoteProducts)) {
+        setDatabaseConnectionStatus("connected", "Connected", `${getDatabaseProjectHost()} · Click to recheck`);
+        const localOrder = products.map(p => p.id);
+        products = remoteProducts.map(normalizeProduct);
+        if (localOrder.length) {
+          products.sort((a, b) => {
+            const ai = localOrder.indexOf(a.id);
+            const bi = localOrder.indexOf(b.id);
+            if (ai === -1 && bi === -1) return 0;
+            if (ai === -1) return 1;
+            if (bi === -1) return -1;
+            return ai - bi;
+          });
+        }
+        hasSupabaseData = true;
+      }
+
+      const { data: remoteSales, error: salesError } = await client.from("pos_sales").select("id,created_at,items,subtotal,tax,total,payment,tendered,change,cashier,reference_code").order("created_at", { ascending: false });
+      if (salesError) console.warn("Unable to load POS sales from Supabase", salesError);
+      if (!salesError && Array.isArray(remoteSales)) {
+        sales = remoteSales.map(normalizeSale);
+        hasSupabaseData = true;
+      }
+
+      const { data: remoteVoidSales, error: voidSalesError } = await client.from("pos_void_sales").select("id,created_at,items,subtotal,tax,total,payment,tendered,change,cashier,reference_code,voided_at").order("created_at", { ascending: false });
+      if (voidSalesError) console.warn("Unable to load voided POS sales from Supabase", voidSalesError);
+      if (!voidSalesError && Array.isArray(remoteVoidSales)) {
+        voidedSales = remoteVoidSales.map(item => {
+          const normalized = normalizeSale(item);
+          normalized.voided = true;
+          normalized.status = "voided";
+          return normalized;
+        });
+      }
+
+      const { data: remoteLogs, error: logError } = await client.from("pos_stock_logs").select("id,product_id,product_name,previous_stock,added_stock,new_stock,note,created_at").order("created_at", { ascending: false }).limit(8);
+      if (logError) console.warn("Unable to load POS stock logs from Supabase", logError);
+      if (!logError && Array.isArray(remoteLogs)) {
+        stockLogs = remoteLogs.map(normalizeStockLog);
+      }
+    } catch (err) {
+      console.warn("Supabase POS sync unavailable, using local data", err);
+      setDatabaseConnectionStatus("error", "Offline", `${getDatabaseProjectHost()} · ${err.message || "Connection request failed"}`);
+    }
+
+    if (!products.length && !sales.length) {
+      products = [];
+      sales = [];
+    }
+    saleCounter = Math.max(1024, sales.reduce((max, sale) => Math.max(max, Number(sale.id || 0)), 1024) + 1);
+    saveLocalData();
+  }
+
+  async function syncPosData({ sale = null, voidedSale = null, productsToSync = [] } = {}){
+    const client = await getSupabaseClient();
+    if (!client) return;
+    try {
+      if (productsToSync.length) {
+        await client.from("pos_products").upsert(productsToSync.map(p=>({ id: p.id, name: p.name, sku: p.sku, category: p.category, price: p.price, cost: p.cost, stock: p.stock, threshold: p.threshold })), { onConflict: "id" });
+      }
+      if (sale) {
+        await client.from("pos_sales").upsert([{
+          id: sale.id,
+          created_at: sale.time instanceof Date ? sale.time.toISOString() : sale.time,
+          items: sale.items,
+          subtotal: sale.subtotal,
+          tax: sale.tax,
+          total: sale.total,
+          payment: sale.payment,
+          tendered: sale.tendered,
+          change: sale.change,
+          cashier: sale.cashier,
+          reference_code: sale.reference_code || null,
+        }], { onConflict: "id" });
+      }
+      if (voidedSale) {
+        await client.from("pos_void_sales").upsert([{
+          id: voidedSale.id,
+          created_at: voidedSale.time instanceof Date ? voidedSale.time.toISOString() : voidedSale.time,
+          items: voidedSale.items,
+          subtotal: voidedSale.subtotal,
+          tax: voidedSale.tax,
+          total: voidedSale.total,
+          payment: voidedSale.payment,
+          tendered: voidedSale.tendered,
+          change: voidedSale.change,
+          cashier: voidedSale.cashier,
+          reference_code: voidedSale.reference_code || null,
+          voided_at: new Date().toISOString(),
+        }], { onConflict: "id" });
+      }
+    } catch (err) {
+      console.warn("Supabase sync failed", err);
+    }
+  }
+
+  async function deleteSaleRemote(saleId){
+    const client = await getSupabaseClient();
+    if (!client) return;
+    try {
+      await client.from("pos_sales").delete().eq("id", saleId);
+    } catch (err) {
+      console.warn("Unable to delete sale from Supabase", err);
+    }
+  }
+
+  async function deleteProductRemote(productId){
+    const client = await getSupabaseClient();
+    if (!client) return;
+    try {
+      await client.from("pos_products").delete().eq("id", productId);
+    } catch (err) {
+      console.warn("Unable to delete product from Supabase", err);
+    }
+  }
+
+  function createStockLogEntry(product, qty, note) {
+    const entry = {
+      id: Date.now(),
+      product_id: product.id,
+      product_name: product.name,
+      previous_stock: product.stock,
+      added_stock: qty,
+      new_stock: product.stock + qty,
+      note,
+      created_at: new Date().toISOString(),
+    };
+    stockLogs.unshift(entry);
+    return entry;
+  }
+
+  async function voidLastSale(saleId){
+    const saleIndex = sales.findIndex(s => s.id === saleId);
+    if (saleIndex === -1) {
+      toast("No sale found to void");
+      return;
+    }
+    const sale = sales[saleIndex];
+    if (!confirm(`Void sale #${sale.id}? This will return items to stock.`)) return;
+    const changedProductIds = new Set((sale.items || []).map(item => Number(item.productId)));
+
+    sales.splice(saleIndex, 1);
+    sale.voided = true;
+    sale.status = "voided";
+    voidedSales.unshift(sale);
+    sale.items.forEach(item => {
+      const product = products.find(p => p.id === item.productId);
+      if (!product) return;
+      const logEntry = createStockLogEntry(product, Number(item.qty || 0), `Voided sale #${sale.id}`);
+      product.stock = logEntry.new_stock;
+    });
+
+    renderCart();
+    renderInventory();
+    renderDashboard();
+    renderProducts();
+    renderSales();
+    renderVoidSales();
+    if (document.getElementById("view-void-sales") && !document.getElementById("view-void-sales").hidden) {
+      showView("void-sales");
+    }
+    toast(`Sale #${sale.id} voided`, false);
+    saveLocalData();
+    await deleteSaleRemote(sale.id);
+    try {
+      await syncPosData({
+        voidedSale: sale,
+        productsToSync: products.filter(product => changedProductIds.has(Number(product.id))),
+      });
+    } catch (err) {
+      console.warn("Unable to sync voided sale to Supabase", err);
+    }
+  }
+
+  function toast(msg, ok=false){
+    const wrap = $("#toastWrap");
+    const el = document.createElement("div");
+    el.className = "toast" + (ok ? " ok":"");
+    el.textContent = msg;
+    wrap.appendChild(el);
+    setTimeout(()=> el.remove(), 2600);
+  }
+
+  /* ---------------- Navigation ---------------- */
+  const viewMeta = {
+    dashboard:{title:"Dashboard", sub:"Today's performance at a glance"},
+    pos:{title:"Point of Sale", sub:"Build the order, then take payment"},
+    inventory:{title:"Inventory", sub:"Manage stock, pricing and product details"},
+    sales:{title:"Sales History", sub:"Every completed transaction"},
+    'void-sales':{title:"Void Sales Logs", sub:"Voided transactions and their details"},
+  };
+
+  const VIEW_STORAGE_KEY = "countr-pos-last-view";
+
+  function getInitialView(){
+    const fromUrl = new URLSearchParams(window.location.search).get("view");
+    const fromStorage = window.localStorage ? window.localStorage.getItem(VIEW_STORAGE_KEY) : null;
+    const requestedView = (fromUrl || fromStorage || "pos").toLowerCase();
+    return Object.prototype.hasOwnProperty.call(viewMeta, requestedView) ? requestedView : "pos";
+  }
+
+  const initialView = getInitialView();
+
+  function showView(name){
+    Object.keys(viewMeta).forEach(v=>{
+      $("#view-"+v).hidden = (v!==name);
+    });
+    $$(".nav-item").forEach(b=> b.classList.toggle("active", b.dataset.view===name));
+    $("#viewTitle").textContent = viewMeta[name].title;
+    $("#viewSub").textContent = viewMeta[name].sub;
+    $("#sidebar").classList.remove("open");
+    if (window.localStorage) {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, name);
+    }
+    if(name==="dashboard") renderDashboard();
+    if(name==="inventory") renderInventory();
+    if(name==="sales") renderSales();
+    if(name==="void-sales") renderVoidSales();
+    if(name==="pos") renderProducts();
+  }
+  $("#nav").addEventListener("click", e=>{
+    const btn = e.target.closest(".nav-item");
+    if(btn) showView(btn.dataset.view);
+  });
+  $("#menuBtn").addEventListener("click", ()=> $("#sidebar").classList.toggle("open"));
+  $("#closeSidebarBtn").addEventListener("click", ()=> $("#sidebar").classList.remove("open"));
+
+  const gcashQrModal = $("#gcashQrModal");
+  const gcashQrBtn = $("#gcashQrBtn");
+  const gcashQrClose = $("#gcashQrClose");
+  function closeGcashQrModal(){
+    gcashQrModal.hidden = true;
+    gcashQrBtn.focus();
+  }
+  gcashQrBtn.addEventListener("click", ()=>{
+    gcashQrModal.hidden = false;
+    gcashQrClose.focus();
+  });
+  gcashQrClose.addEventListener("click", closeGcashQrModal);
+  gcashQrModal.addEventListener("click", e=>{
+    if (e.target === gcashQrModal) closeGcashQrModal();
+  });
+  document.addEventListener("keydown", e=>{
+    if (e.key === "Escape" && !gcashQrModal.hidden) closeGcashQrModal();
+  });
+
+  /* ---------------- Clock ---------------- */
+  function tickClock(){
+    const now = new Date();
+    const clockEl = $("#clock");
+    if (!clockEl) return;
+    clockEl.textContent = now.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  }
+  setInterval(tickClock, 1000);
+  tickClock();
+
+  /* ---------------- Dashboard ---------------- */
+  let categoryBreakdownVisible = false;
+
+  function renderDashboard(){
+    function getCategorySales(category, period){
+      const selectedDateValues = getSelectedDatesForCategory(category);
+      const today = new Date();
+      const startOfDay = new Date(today);
+      startOfDay.setHours(0,0,0,0);
+      const endOfDay = new Date(today);
+      endOfDay.setHours(23,59,59,999);
+      const weekStart = new Date(today);
+      weekStart.setDate(today.getDate() - today.getDay());
+      weekStart.setHours(0,0,0,0);
+
+      const filteredSales = sales.filter(s => {
+        const saleTime = new Date(s.time);
+        const matchesDateSelection = selectedDateValues.length
+          ? isSaleInSelectedDates(saleTime, selectedDateValues)
+          : (period === "weekly"
+              ? saleTime >= weekStart && saleTime <= endOfDay
+              : saleTime >= startOfDay && saleTime <= endOfDay);
+
+        if (!matchesDateSelection) return false;
+        if (period === "cash") return s.payment === "cash";
+        if (period === "gcash") return s.payment === "gcash";
+        return true;
+      });
+
+      return filteredSales.reduce((sum, s) => {
+        const catSalesAmount = s.items
+          .filter(item => {
+            const p = products.find(pp => pp.id === item.productId);
+            return p && p.category === category;
+          })
+          .reduce((itemSum, item) => itemSum + (item.price * item.qty), 0);
+        return sum + catSalesAmount;
+      }, 0);
+    }
+
+    function getCategoryItemCount(category, period){
+      const selectedDateValues = getSelectedDatesForCategory(category);
+      const today = new Date();
+      const startOfDay = new Date(today);
+      startOfDay.setHours(0,0,0,0);
+      const endOfDay = new Date(today);
+      endOfDay.setHours(23,59,59,999);
+      const weekStart = new Date(today);
+      weekStart.setDate(today.getDate() - today.getDay());
+      weekStart.setHours(0,0,0,0);
+
+      const filteredSales = sales.filter(s => {
+        const saleTime = new Date(s.time);
+        const matchesDateSelection = selectedDateValues.length
+          ? isSaleInSelectedDates(saleTime, selectedDateValues)
+          : (period === "weekly"
+              ? saleTime >= weekStart && saleTime <= endOfDay
+              : saleTime >= startOfDay && saleTime <= endOfDay);
+
+        if (!matchesDateSelection) return false;
+        if (period === "cash") return s.payment === "cash";
+        if (period === "gcash") return s.payment === "gcash";
+        return true;
+      });
+
+      return filteredSales.reduce((sum, s) => {
+        const catQty = s.items
+          .filter(item => {
+            const p = products.find(pp => pp.id === item.productId);
+            return p && p.category === category;
+          })
+          .reduce((q, item) => q + (Number(item.qty) || 0), 0);
+        return sum + catQty;
+      }, 0);
+    }
+    
+    // Setup category cards
+    const categories = ["Beverages", "Snacks", "Rent"];
+    categories.forEach(cat => {
+      const cards = $$(".category-card");
+      const card = cards.find(c => c.dataset.category === cat);
+      if (!card) return;
+      
+      const calendarBtn = card.querySelector(".calendar-btn");
+      const datePicker = card.querySelector(".card-date-picker");
+      const dateSelector = card.querySelector(".date-selector");
+      const dateButtons = card.querySelectorAll(".date-btn");
+      const selectedContainer = card.querySelector(".selected-date-container") || document.createElement("div");
+      const selectedDatesWrap = selectedContainer.querySelector(".selected-date-list") || document.createElement("div");
+      const selectedActionsWrap = selectedContainer.querySelector(".selected-date-actions") || document.createElement("div");
+      const selectedClearBtn = selectedContainer.querySelector(".selected-date-clear") || document.createElement("button");
+      const selectedDetailsBtn = selectedContainer.querySelector(".selected-date-details-toggle") || document.createElement("button");
+      const selectedStatus = selectedContainer.querySelector(".selected-date-status") || document.createElement("div");
+
+      if (!card.dataset.bound) {
+        if (calendarBtn && datePicker) {
+          calendarBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof datePicker.showPicker === "function") {
+              datePicker.showPicker();
+            } else {
+              datePicker.click();
+            }
+          };
+        }
+
+        if (datePicker) {
+          datePicker.onchange = (e) => {
+            const dateValue = e.target.value;
+            if (!dateValue) return;
+            const currentValues = getSelectedDatesForCategory(cat);
+            if (!currentValues.includes(dateValue)) {
+              currentValues.push(dateValue);
+              selectedDates[cat] = currentValues.sort((a,b)=>a.localeCompare(b));
+            }
+            e.target.value = "";
+            updateCategoryDisplay(cat, card);
+          };
+        }
+
+        dateButtons.forEach(btn => {
+          btn.addEventListener("click", () => {
+            dateButtons.forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            updateCategoryDisplay(cat, card);
+          });
+        });
+
+        if (!card.querySelector(".date-btn.active")) {
+          dateButtons[0]?.classList.add("active");
+        }
+
+        selectedContainer.className = "selected-date-container";
+        selectedContainer.style.marginTop = "10px";
+        selectedContainer.style.display = "flex";
+        selectedContainer.style.flexDirection = "row";
+        selectedContainer.style.flexWrap = "wrap";
+        selectedContainer.style.gap = "10px";
+        selectedContainer.style.alignItems = "center";
+        selectedContainer.style.justifyContent = "space-between";
+
+        selectedDatesWrap.className = "selected-date-list";
+        selectedDatesWrap.style.display = "flex";
+        selectedDatesWrap.style.flexWrap = "wrap";
+        selectedDatesWrap.style.gap = "6px";
+
+        selectedActionsWrap.className = "selected-date-actions";
+        selectedActionsWrap.style.display = "flex";
+        selectedActionsWrap.style.flexWrap = "wrap";
+        selectedActionsWrap.style.gap = "10px";
+        selectedActionsWrap.style.width = "100%";
+
+        selectedClearBtn.className = "btn btn-danger btn-sm selected-date-clear";
+        selectedClearBtn.type = "button";
+        selectedClearBtn.textContent = "Clear all dates";
+        selectedClearBtn.style.cursor = "pointer";
+        selectedClearBtn.style.display = "none";
+
+        selectedStatus.className = "selected-date-status";
+        selectedStatus.style.fontSize = "12px";
+        selectedStatus.style.color = "var(--ink-soft)";
+        selectedStatus.style.lineHeight = "1.4";
+
+        selectedDetailsBtn.className = "btn btn-blue btn-sm selected-date-details-toggle";
+        selectedDetailsBtn.type = "button";
+        selectedDetailsBtn.textContent = "Show details";
+        selectedDetailsBtn.style.alignSelf = "flex-start";
+        selectedDetailsBtn.style.cursor = "pointer";
+        selectedDetailsBtn.style.display = "none";
+
+        selectedDatesWrap.addEventListener("click", (e) => {
+          const chip = e.target.closest(".selected-date-chip");
+          if (!chip) return;
+          const selectedValue = chip.dataset.date;
+          if (!selectedValue) return;
+          selectedDates[cat] = getSelectedDatesForCategory(cat).filter(value => value !== selectedValue);
+          updateCategoryDisplay(cat, card);
+        });
+
+        selectedClearBtn.addEventListener("click", () => {
+          selectedDates[cat] = [];
+          updateCategoryDisplay(cat, card);
+        });
+
+        selectedDetailsBtn.addEventListener("click", () => {
+          const selectedValues = getSelectedDatesForCategory(cat);
+          if (!selectedValues.length) return;
+          openSelectedDateDetailsModal(cat, selectedValues);
+        });
+
+        if (!selectedContainer.querySelector(".selected-date-list")) {
+          selectedContainer.appendChild(selectedDatesWrap);
+          selectedActionsWrap.appendChild(selectedClearBtn);
+          selectedActionsWrap.appendChild(selectedDetailsBtn);
+          selectedContainer.appendChild(selectedActionsWrap);
+          selectedContainer.appendChild(selectedStatus);
+          if (dateSelector) {
+            dateSelector.insertAdjacentElement("afterend", selectedContainer);
+          } else {
+            datePicker.insertAdjacentElement("afterend", selectedContainer);
+          }
+        }
+
+        card.dataset.bound = "true";
+      }
+
+      updateCategoryDisplay(cat, card);
+    });
+
+    function updateCategoryDisplay(cat, card) {
+      const activeBtn = card.querySelector(".date-btn.active");
+      const period = activeBtn ? activeBtn.dataset.period : "today";
+      const value = getCategorySales(cat, period);
+      const valueEl = card.querySelector(".stat-value");
+      if (valueEl) valueEl.textContent = money(value);
+      const count = getCategoryItemCount(cat, period);
+      const countEl = card.querySelector(".stat-count");
+      if (countEl) countEl.textContent = `${count} sold`;
+
+      const chipWrap = card.querySelector(".selected-date-list");
+      const clearBtn = card.querySelector(".selected-date-clear");
+      const detailsBtn = card.querySelector(".selected-date-details-toggle");
+      const statusEl = card.querySelector(".selected-date-status");
+      if (chipWrap && clearBtn && detailsBtn && statusEl) {
+        const selectedValues = getSelectedDatesForCategory(cat);
+        if (!selectedValues.length) {
+          chipWrap.innerHTML = '<span style="font-size:11px;color:var(--ink-soft);">No dates selected</span>';
+          clearBtn.style.display = "none";
+          detailsBtn.style.display = "none";
+          detailsBtn.textContent = "Show details";
+          statusEl.textContent = "Select one or more dates to total multiple sales periods.";
+          return;
+        }
+
+        chipWrap.innerHTML = selectedValues.map(dateValue => `
+          <button type="button" class="selected-date-chip" data-date="${dateValue}" style="border:1px solid var(--border);background:var(--surface);color:var(--ink);border-radius:999px;padding:6px 10px;font-size:11px;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.06);">
+            ${formatSelectedDateLabel(dateValue)}
+          </button>
+        `).join("");
+
+        const descriptor = selectedValues.length === 1 ? "1 date selected" : `${selectedValues.length} dates selected`;
+        statusEl.textContent = `${descriptor} • Click a date to remove it.`;
+        clearBtn.style.display = "inline-flex";
+        detailsBtn.style.display = "inline-flex";
+      }
+    }
+
+    // Low stock list
+    const low = products.filter(p=> !isRentProduct(p) && p.stock<=p.threshold);
+
+    // Current-month category chart
+    const monthlySales = window.getSalesForMonth
+      ? window.getSalesForMonth(sales)
+      : sales.filter(sale => {
+          const saleDate = new Date(sale.time);
+          const now = new Date();
+          return saleDate.getFullYear() === now.getFullYear()
+            && saleDate.getMonth() === now.getMonth();
+        });
+    const categoryChartTitle = document.querySelector("#catChart")?.parentElement
+      ?.querySelector(".panel-head h3");
+    if (categoryChartTitle) {
+      categoryChartTitle.textContent = `Sales by category — ${new Date().toLocaleDateString([], { month: "long", year: "numeric" })}`;
+    }
+    const categoryBreakdown = window.buildCategorySalesBreakdown
+      ? window.buildCategorySalesBreakdown(monthlySales, products, Object.keys(CATS))
+      : {};
+    const byCat = Object.keys(CATS).reduce((acc, category) => {
+      acc[category] = categoryBreakdown[category]?.totalRevenue || 0;
+      return acc;
+    }, {});
+    const max = Math.max(1, ...Object.values(byCat));
+    const catHtml = Object.keys(CATS).map(c=>{
+      const val = byCat[c]||0;
+      const pct = Math.round((val/max)*100);
+      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        <div style="width:110px;font-size:12px;color:var(--ink-soft);flex-shrink:0;">${c}</div>
+        <div style="flex:1;background:var(--paper);border-radius:99px;height:9px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:${CATS[c]};border-radius:99px;"></div>
+        </div>
+        <div style="width:64px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;flex-shrink:0;">${money(val)}</div>
+      </div>`;
+    }).join("");
+    $("#catChart").innerHTML = monthlySales.length ? catHtml : `<div class="empty" style="padding:20px 0;"><p>No sales recorded this month yet — head to Point of Sale to ring up an order.</p></div>`;
+
+    const breakdownHtml = Object.keys(CATS).map(category => {
+      const breakdown = categoryBreakdown[category];
+      const itemsHtml = breakdown?.items?.length
+        ? breakdown.items.map(item => `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12px;">
+              <div style="flex:1;min-width:0;">
+                <div style="font-weight:600;">${item.name}</div>
+                <div style="color:var(--ink-soft);">${item.qty} sold</div>
+              </div>
+              <div class="mono" style="text-align:right;white-space:nowrap;">${money(item.revenue)}</div>
+            </div>`).join("")
+        : '<div style="padding:6px 0;color:var(--ink-soft);font-size:12px;">No product sales yet.</div>';
+      return `
+        <div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--paper);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;">
+            <div style="font-size:13px;font-weight:700;">${category}</div>
+            <div class="mono" style="font-size:12px;">${breakdown?.totalQty || 0} sold • ${money(breakdown?.totalRevenue || 0)}</div>
+          </div>
+          ${itemsHtml}
+        </div>`;
+    }).join("");
+    $("#categoryBreakdown").innerHTML = breakdownHtml;
+    const breakdownContainer = document.getElementById("categoryBreakdown");
+    const toggleBtn = document.getElementById("toggleCategoryBreakdownBtn");
+    if (breakdownContainer && toggleBtn) {
+      breakdownContainer.style.display = categoryBreakdownVisible ? "block" : "none";
+      toggleBtn.textContent = categoryBreakdownVisible ? "Hide details" : "Show details";
+    }
+
+    // low stock list
+    if(low.length===0){
+      $("#lowStockList").innerHTML = `<div class="empty" style="padding:24px 20px;"><p>All products are well stocked.</p></div>`;
+    } else {
+      $("#lowStockList").innerHTML = low.slice(0,6).map(p=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:11px 18px;border-bottom:1px solid var(--border);">
+          <div>
+            <div style="font-size:13px;font-weight:600;">${p.name}</div>
+            <div style="font-size:11px;color:var(--ink-soft);" class="mono">${p.sku}</div>
+          </div>
+          <span class="badge ${p.stock===0?'badge-bad':'badge-warn'}"><i class="badge-dot"></i>${p.stock} left</span>
+        </div>`).join("");
+    }
+
+    // quantity sold and revenue per product for the selected day
+    const salesRefDate = new Date();
+    if (productSalesDay === "yesterday") salesRefDate.setDate(salesRefDate.getDate() - 1);
+    const dayLabel = productSalesDay === "yesterday" ? "yesterday" : "today";
+    $("#productSalesTitle").textContent = dayLabel;
+    const dailySales = sales.filter(t => new Date(t.time).toDateString() === salesRefDate.toDateString());
+    const productSales = {};
+    dailySales.forEach(t=>{
+      t.items.forEach(i=>{
+        const productId = Number(i.productId || 0);
+        const product = products.find(pp=>pp.id===productId);
+        const label = product?.name || i.name || i.sku || `Product ${productId || "?"}`;
+        const qty = Number(i.qty || 0);
+        const revenue = Number(i.price || 0) * qty;
+        if (!productSales[productId]) {
+          productSales[productId] = { label, qty: 0, revenue: 0, stock: product?.stock ?? 0 };
+        }
+        productSales[productId].qty += qty;
+        productSales[productId].revenue += revenue;
+        productSales[productId].stock = product?.stock ?? productSales[productId].stock;
+      });
+    });
+    const totalEarnedToday = dailySales.reduce((sum,t)=> sum + Number(t.total || 0), 0);
+
+    if (!Object.keys(productSales).length) {
+      const message = productSalesDay === "yesterday" ? "No products sold yesterday." : "No products sold today yet.";
+      $("#productSalesList").innerHTML = `<div class="empty" style="padding:24px 20px;"><p>${message}</p></div>`;
+    } else {
+      const productSalesHtml = Object.values(productSales)
+        .sort((a,b)=>b.revenue - a.revenue)
+        .map(data=>`
+          <div style="display:grid;grid-template-columns:1.8fr 0.8fr 0.9fr 1fr;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);">
+            <div style="font-size:13px;"><strong>${data.label}</strong></div>
+            <div class="mono" style="font-size:13px;text-align:right;">${data.qty} qty</div>
+            <div class="mono" style="font-size:13px;text-align:right;">${data.stock} left</div>
+            <div class="mono" style="font-size:13px;text-align:right;">${money(data.revenue)}</div>
+          </div>`)
+        .join("");
+
+      $("#productSalesList").innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px;font-size:13px;font-weight:700;">
+          <div>Total overall earned</div>
+          <div class="mono">${money(totalEarnedToday)}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.8fr 0.8fr 0.9fr 1fr;gap:12px;padding-bottom:10px;border-bottom:1px solid var(--border);margin-bottom:10px;color:var(--ink-soft);font-size:12px;">
+          <div>Product</div>
+          <div style="text-align:right;">Sold</div>
+          <div style="text-align:right;">Remaining</div>
+          <div style="text-align:right;">Earned</div>
+        </div>
+        ${productSalesHtml}
+      `;
+    }
+  }
+
+  function getProductsSummaryForDateDetails(category, selectedValues, paymentFilter = 'all') {
+    const matchedSales = sales
+      .filter(sale => {
+        const saleTime = new Date(sale.time);
+        const matchesDate = isSaleInSelectedDates(saleTime, selectedValues);
+        const matchesPayment = paymentFilter === 'all' || sale.payment === paymentFilter;
+        const hasCategoryItem = sale.items.some(item => {
+          const product = products.find(pp => pp.id === item.productId);
+          return product && product.category === category;
+        });
+        return matchesDate && matchesPayment && hasCategoryItem;
+      });
+
+    const productSummary = {};
+    matchedSales.forEach(sale => {
+      sale.items.forEach(item => {
+        const product = products.find(pp => pp.id === item.productId);
+        if (!product || product.category !== category) return;
+        if (!productSummary[product.id]) {
+          productSummary[product.id] = {
+            name: product.name,
+            qty: 0,
+            revenue: 0,
+          };
+        }
+        productSummary[product.id].qty += Number(item.qty || 0);
+        productSummary[product.id].revenue += Number(item.price || 0) * Number(item.qty || 0);
+      });
+    });
+
+    return Object.values(productSummary).sort((a, b) => b.revenue - a.revenue);
+  }
+
+  function getSelectedDateDetailsTotals(category, selectedValues) {
+    return sales.reduce((totals, sale) => {
+      const saleTime = new Date(sale.time);
+      if (!isSaleInSelectedDates(saleTime, selectedValues)) return totals;
+      const saleTotal = sale.items.reduce((sum, item) => {
+        const product = products.find(pp => pp.id === item.productId);
+        if (!product || product.category !== category) return sum;
+        return sum + (item.price * item.qty);
+      }, 0);
+      if (saleTotal <= 0) return totals;
+      totals.all += saleTotal;
+      if (sale.payment === 'cash') totals.cash += saleTotal;
+      if (sale.payment === 'gcash') totals.gcash += saleTotal;
+      return totals;
+    }, { all: 0, cash: 0, gcash: 0 });
+  }
+
+  function getSelectedDateDetails(category, selectedValues, paymentFilter = 'all') {
+    const matchedSales = sales
+      .filter(sale => {
+        const saleTime = new Date(sale.time);
+        const matchesDate = isSaleInSelectedDates(saleTime, selectedValues);
+        const matchesPayment = paymentFilter === 'all' || sale.payment === paymentFilter;
+        const hasCategoryItem = sale.items.some(item => {
+          const product = products.find(pp => pp.id === item.productId);
+          return product && product.category === category;
+        });
+        return matchesDate && matchesPayment && hasCategoryItem;
+      })
+      .sort((a,b) => new Date(b.time) - new Date(a.time));
+
+    return matchedSales.map(sale => {
+      const saleItems = sale.items.filter(item => {
+        const product = products.find(pp => pp.id === item.productId);
+        return product && product.category === category;
+      });
+      const itemRows = saleItems.map(item => {
+        const product = products.find(pp => pp.id === item.productId);
+        return `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12px;">
+          <div style="flex:1;min-width:120px;">${product?.name || item.name || 'Unknown product'}</div>
+          <div style="min-width:72px;text-align:right;color:var(--ink-soft);">${item.qty} × ${money(item.price)}</div>
+          <div style="min-width:80px;text-align:right;font-weight:700;">${money(item.price * item.qty)}</div>
+        </div>`;
+      }).join("");
+      const saleTotal = saleItems.reduce((sum, item) => sum + item.price * item.qty, 0);
+      return `<div style="padding:10px 0;border-bottom:1px solid var(--border);">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
+          <span>${new Date(sale.time).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' })}</span>
+          <span>${new Date(sale.time).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}</span>
+          <span style="text-transform:uppercase;font-weight:700;">${sale.payment}</span>
+        </div>
+        ${itemRows}
+        <div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;font-weight:700;padding-top:8px;">
+          <span>Total for this sale</span>
+          <span>${money(saleTotal)}</span>
+        </div>
+      </div>`;
+    });
+  }
+
+  function openSelectedDateDetailsModal(category, selectedValues) {
+    const modal = document.getElementById('selectedDateDetailsModal');
+    const title = document.getElementById('selectedDateDetailsTitle');
+    const body = document.getElementById('selectedDateDetailsBody');
+    const allBtn = document.getElementById('selectedDateDetailsFilterAll');
+    const cashBtn = document.getElementById('selectedDateDetailsFilterCash');
+    const gcashBtn = document.getElementById('selectedDateDetailsFilterGcash');
+    if (!modal || !title || !body || !allBtn || !cashBtn || !gcashBtn) return;
+
+    modal.dataset.category = category;
+    modal.dataset.values = JSON.stringify(selectedValues);
+    modal.dataset.filter = 'all';
+
+    title.textContent = `${category} sales details`;
+    allBtn.classList.add('active');
+    cashBtn.classList.remove('active');
+    gcashBtn.classList.remove('active');
+
+    const totals = getSelectedDateDetailsTotals(category, selectedValues);
+    const productsSummary = getProductsSummaryForDateDetails(category, selectedValues, 'all');
+    const salesRows = getSelectedDateDetails(category, selectedValues, 'all');
+
+    const productsSummaryHtml = productsSummary.length
+      ? productsSummary.map(p => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
+            <div style="flex:1;"><strong>${p.name}</strong></div>
+            <div style="text-align:right;color:var(--ink-soft);min-width:60px;">${p.qty} qty</div>
+            <div class="mono" style="text-align:right;min-width:80px;font-weight:700;">${money(p.revenue)}</div>
+          </div>
+        `).join('')
+      : '<div style="font-size:12px;color:var(--ink-soft);">No products sold.</div>';
+
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Total</div>
+          <div style="font-size:18px;font-weight:800;">${money(totals.all)}</div>
+        </div>
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Cash</div>
+          <div style="font-size:18px;font-weight:800;">${money(totals.cash)}</div>
+        </div>
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">GCash</div>
+          <div style="font-size:18px;font-weight:800;">${money(totals.gcash)}</div>
+        </div>
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Qty Sold</div>
+          <div style="font-size:18px;font-weight:800;">${productsSummary.reduce((sum, p) => sum + p.qty, 0)}</div>
+        </div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;">Product Summary = ${productsSummary.length}</div>
+        <div style="border:1px solid var(--border);border-radius:8px;padding:12px;">
+          ${productsSummaryHtml}
+        </div>
+      </div>
+      <div style="margin-top:16px;">
+        <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;">Sales Detail</div>
+        ${salesRows.length ? salesRows.join('') : '<div style="font-size:12px;color:var(--ink-soft);">No sales found for these dates.</div>'}
+      </div>
+    `;
+    modal.hidden = false;
+  }
+
+  function renderSelectedDateModalDetails(filter) {
+    const modal = document.getElementById('selectedDateDetailsModal');
+    const body = document.getElementById('selectedDateDetailsBody');
+    const allBtn = document.getElementById('selectedDateDetailsFilterAll');
+    const cashBtn = document.getElementById('selectedDateDetailsFilterCash');
+    const gcashBtn = document.getElementById('selectedDateDetailsFilterGcash');
+    if (!modal || !body || !allBtn || !cashBtn || !gcashBtn) return;
+
+    const category = modal.dataset.category;
+    const values = JSON.parse(modal.dataset.values || '[]');
+    const totals = getSelectedDateDetailsTotals(category, values);
+    const productsSummary = getProductsSummaryForDateDetails(category, values, filter);
+    const salesRows = getSelectedDateDetails(category, values, filter);
+
+    const productsSummaryHtml = productsSummary.length
+      ? productsSummary.map(p => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
+            <div style="flex:1;"><strong>${p.name}</strong></div>
+            <div style="text-align:right;color:var(--ink-soft);min-width:60px;">${p.qty} qty</div>
+            <div class="mono" style="text-align:right;min-width:80px;font-weight:700;">${money(p.revenue)}</div>
+          </div>
+        `).join('')
+      : '<div style="font-size:12px;color:var(--ink-soft);">No products sold.</div>';
+
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Total</div>
+          <div style="font-size:18px;font-weight:800;">${money(totals.all)}</div>
+        </div>
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Cash</div>
+          <div style="font-size:18px;font-weight:800;">${money(totals.cash)}</div>
+        </div>
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">GCash</div>
+          <div style="font-size:18px;font-weight:800;">${money(totals.gcash)}</div>
+        </div>
+        <div style="padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--paper);">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Qty Sold</div>
+          <div style="font-size:18px;font-weight:800;">${productsSummary.reduce((sum, p) => sum + p.qty, 0)}</div>
+        </div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;">Product Summary = ${productsSummary.length}</div>
+        <div style="border:1px solid var(--border);border-radius:8px;padding:12px;">
+          ${productsSummaryHtml}
+        </div>
+      </div>
+      <div style="margin-top:16px;">
+        <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;">Sales Detail</div>
+        ${salesRows.length ? salesRows.join('') : '<div style="font-size:12px;color:var(--ink-soft);">No sales found for these dates.</div>'}
+      </div>
+    `;
+
+    allBtn.classList.toggle('active', filter === 'all');
+    cashBtn.classList.toggle('active', filter === 'cash');
+    gcashBtn.classList.toggle('active', filter === 'gcash');
+  }
+
+  /* ---------------- POS ---------------- */
+  function renderCatTabs(){
+    const cats = ["All", ...Object.keys(CATS)];
+    $("#catTabs").innerHTML = cats.map(c=>
+      `<button class="cat-tab ${c===activeCategory?'active':''}" data-cat="${c}">${c}</button>`
+    ).join("");
+  }
+  $("#catTabs").addEventListener("click", e=>{
+    const b = e.target.closest(".cat-tab");
+    if(!b) return;
+    activeCategory = b.dataset.cat;
+    renderProducts();
+  });
+
+  function renderProducts(){
+    renderCatTabs();
+    const q = $("#posSearch").value.trim().toLowerCase();
+    const list = products.filter(p=>{
+      const matchesCat = activeCategory==="All" || p.category===activeCategory;
+      const matchesQ = !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+      return matchesCat && matchesQ;
+    });
+    $("#productGrid").innerHTML = list.map(p=>{
+      const out = !isRentProduct(p) && p.stock<=0;
+      const low = !isRentProduct(p) && p.stock>0 && p.stock<=p.threshold;
+      return `<button class="product-card" data-id="${p.id}" ${out?'disabled':''}>
+        ${low?'<span class="low-tag">LOW</span>':''}
+        <div class="product-swatch" style="background:${CATS[p.category]}">${initials(p.name)}</div>
+        <div class="pname">${p.name}</div>
+        <div class="pmeta">
+          <span class="pprice mono">${money(p.price)}</span>
+          <span class="pstock">${isRentProduct(p) ? 'Available for rent' : out ? 'Out of stock' : p.stock+' in stock'}</span>
+        </div>
+      </button>`;
+    }).join("") || `<div class="empty"><h4>No products found</h4><p>Try a different search term.</p></div>`;
+  }
+  $("#posSearch").addEventListener("input", renderProducts);
+
+  $("#productGrid").addEventListener("click", e=>{
+    const card = e.target.closest(".product-card");
+    if(!card || card.disabled) return;
+    triggerVibration();
+    addToCart(Number(card.dataset.id));
+  });
+
+  function triggerVibration(pattern = [10, 25, 10]){
+    try {
+      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+        navigator.vibrate(pattern);
+        return true;
+      }
+    } catch (err) {
+      console.warn("Unable to trigger vibration", err);
+    }
+
+    try {
+      if (typeof window !== "undefined" && typeof window.AudioContext === "function") {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioContextClass();
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = "square";
+        oscillator.frequency.value = 880;
+        gain.gain.value = 0.0001;
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start();
+        gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.08);
+        oscillator.stop(ctx.currentTime + 0.09);
+        return false;
+      }
+    } catch (err) {
+      console.warn("Unable to play fallback audio cue", err);
+    }
+
+    return false;
+  }
+
+  function addToCart(id){
+    const p = getProductById(id);
+    if(!p) return;
+    const line = cart.find(c=>Number(c.productId)===Number(id));
+    const currentQty = line ? line.qty : 0;
+    if(!isRentProduct(p) && currentQty >= p.stock){ toast(`Only ${p.stock} of "${p.name}" in stock`); return; }
+    if(line) line.qty++;
+    else cart.push({productId:Number(id), qty:1});
+    renderCart();
+  }
+  function changeQty(id, delta){
+    const line = cart.find(c=>Number(c.productId)===Number(id));
+    if(!line) return;
+    const p = getProductById(id);
+    const next = line.qty + delta;
+    if(next<=0){ cart = cart.filter(c=>Number(c.productId)!==Number(id)); }
+    else if(p && !isRentProduct(p) && next > p.stock){ toast(`Only ${p.stock} of "${p.name}" in stock`); }
+    else { line.qty = next; }
+    renderCart();
+  }
+
+  function cartTotals(){
+    const subtotal = cart.reduce((s,c)=>{
+      const p = products.find(pp=>pp.id===c.productId);
+      return s + (p? p.price*c.qty : 0);
+    },0);
+    return {subtotal, tax: 0, total: subtotal};
+  }
+
+  function renderCart(){
+    $("#orderMeta").textContent = `#${saleCounter} · Daci Pickle Hub`;
+    if(cart.length===0){
+      $("#cartItems").innerHTML = `<div class="empty" style="padding:34px 10px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="width:30px;height:30px;margin-bottom:8px;opacity:.5;"><rect x="2" y="7" width="20" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M2 12h20"/></svg>
+        <h4>Order is empty</h4><p>Tap a product to add it here.</p>
+      </div>`;
+    } else {
+      $("#cartItems").innerHTML = cart.map(c=>{
+        const p = getProductById(c.productId);
+        if(!p) return "";
+        return `<div class="rline">
+          <div class="rinfo">
+            <div class="rname">${p.name}</div>
+            <div class="runit">${money(p.price)} each</div>
+            <div class="qty-ctl">
+              <button data-act="dec" data-id="${p.id}">−</button>
+              <span>${c.qty}</span>
+              <button data-act="inc" data-id="${p.id}">+</button>
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div class="rtotal">${money(p.price*c.qty)}</div>
+            <button class="rremove" data-act="rm" data-id="${p.id}">Remove</button>
+          </div>
+        </div>`;
+      }).filter(Boolean).join("");
+    }
+    const {subtotal, total} = cartTotals();
+    $("#sumSubtotal").textContent = money(subtotal);
+    $("#sumTotal").textContent = money(total);
+    $("#checkoutBtn").disabled = cart.length===0;
+    updateChange();
+  }
+  $("#cartItems").addEventListener("click", e=>{
+    const b = e.target.closest("button[data-act]");
+    if(!b) return;
+    const id = Number(b.dataset.id);
+    if(b.dataset.act==="inc") {
+      triggerVibration();
+      changeQty(id, 1);
+    }
+    if(b.dataset.act==="dec") {
+      triggerVibration();
+      changeQty(id, -1);
+    }
+    if(b.dataset.act==="rm") { cart = cart.filter(c=>c.productId!==id); renderCart(); }
+  });
+  $("#clearCartBtn").addEventListener("click", ()=>{ cart=[]; renderCart(); });
+  // payment method tabs
+  $$(".pay-tab").forEach(tab=>{
+    tab.addEventListener("click", ()=>{
+      $$(".pay-tab").forEach(t=>t.classList.remove("active"));
+      tab.classList.add("active");
+      payMethod = tab.dataset.pay;
+      $("#tenderRow").style.display = payMethod==="cash" ? "block":"none";
+      $("#gcashRefRow").style.display = payMethod==="gcash" ? "block":"none";
+      updateChange();
+    });
+  });
+
+  function quickTenderButtons(total){
+    const opts = new Set([Math.ceil(total), Math.ceil(total/5)*5, Math.ceil(total/10)*10, Math.ceil(total/20)*20]);
+    $("#tenderQuick").innerHTML = Array.from(opts).slice(0,4).map(v=>
+      `<button class="btn btn-sm" data-tender="${v}">${money(v)}</button>`).join("");
+  }
+  $("#tenderQuick").addEventListener("click", e=>{
+    const b = e.target.closest("button[data-tender]");
+    if(!b) return;
+    $("#tenderInput").value = b.dataset.tender;
+    updateChange();
+  });
+  $("#tenderInput").addEventListener("input", updateChange);
+  $("#gcashRefInput").addEventListener("input", updateChange);
+
+  function updateChange(){
+    const {total} = cartTotals();
+    quickTenderButtons(total);
+    if(payMethod!="cash"){
+      $("#changeDue").textContent = money(0);
+      const refInput = $("#gcashRefInput");
+      const hasValidRef = payMethod === "gcash" ? /\d{4}/.test(refInput.value || "") : true;
+      $("#checkoutBtn").disabled = cart.length===0 || !hasValidRef;
+      return;
+    }
+    const tendered = parseFloat($("#tenderInput").value)||0;
+    const change = Math.max(0, tendered-total);
+    $("#changeDue").textContent = money(change);
+    $("#checkoutBtn").disabled = cart.length===0 || tendered < total;
+  }
+
+  async function deleteSaleRemote(saleId){
+    const client = await getSupabaseClient();
+    if (!client) return;
+    try {
+      await client.from("pos_sales").delete().eq("id", saleId);
+    } catch (err) {
+      console.warn("Unable to delete sale from Supabase", err);
+    }
+  }
+
+  function addStockLogEntry(product, qty, note){
+    const logEntry = {
+      id: Date.now(),
+      product_id: product.id,
+      product_name: product.name,
+      previous_stock: product.stock,
+      added_stock: qty,
+      new_stock: product.stock + qty,
+      note,
+      created_at: new Date().toISOString(),
+    };
+    stockLogs.unshift(logEntry);
+    return logEntry;
+  }
+
+  $("#checkoutBtn").addEventListener("click", async ()=>{
+    const {subtotal, total} = cartTotals();
+    const gcashRef = $("#gcashRefInput").value.trim();
+    if (payMethod === "gcash" && !/^\d{4}$/.test(gcashRef)) {
+      toast("Please enter a 4-digit GCash reference code", false);
+      return;
+    }
+    const tendered = payMethod==="cash" ? (parseFloat($("#tenderInput").value)||0) : total;
+    const change = payMethod==="cash" ? tendered-total : 0;
+
+    const saleItems = cart.map(c=>{
+      const p = getProductById(c.productId);
+      if (!p) return null;
+      return {productId:Number(p.id), name:p.name, sku:p.sku, price:p.price, qty:Number(c.qty)};
+    }).filter(Boolean);
+    const changedProductIds = new Set(saleItems
+      .filter(item => !isRentProduct(getProductById(item.productId)))
+      .map(item => item.productId));
+    // decrement stock only for inventory items; rent items do not track stock changes
+    if (typeof window !== 'undefined' && typeof window.applyInventoryDeduction === 'function') {
+      window.applyInventoryDeduction(products, cart);
+    } else {
+      cart.forEach(c=>{
+        const p = products.find(pp=>Number(pp.id)===Number(c.productId));
+        if(p && !isRentProduct(p)) p.stock = Math.max(0, Number(p.stock || 0) - Number(c.qty || 0));
+      });
+    }
+
+    const sale = {
+      id: saleCounter++,
+      time: new Date(),
+      items: saleItems,
+      subtotal, tax: 0, total,
+      payment: payMethod,
+      tendered, change,
+      cashier: "Daci Pickle Hub",
+      reference_code: payMethod === "gcash" ? gcashRef : null
+    };
+    sales.unshift(sale);
+    cart = [];
+    $("#tenderInput").value = "";
+    $("#gcashRefInput").value = "";
+    renderCart();
+    renderInventory();
+    renderDashboard();
+    renderProducts();
+    toast(`Sale #${sale.id} completed — ${money(total)}`, true);
+    openReceipt(sale);
+
+    saveLocalData();
+    try {
+      await syncPosData({
+        sale,
+        productsToSync: products.filter(product => changedProductIds.has(Number(product.id))),
+      });
+    } catch (err) {
+      console.warn("Unable to sync completed sale to Supabase", err);
+    }
+  });
+
+  /* ---------------- Toggle breakdown ---------------- */
+  document.addEventListener("DOMContentLoaded", () => {
+    const toggleBtn = document.getElementById("toggleCategoryBreakdownBtn");
+    if (!toggleBtn) return;
+
+    toggleBtn.addEventListener("click", () => {
+      categoryBreakdownVisible = !categoryBreakdownVisible;
+      const breakdownContainer = document.getElementById("categoryBreakdown");
+      if (breakdownContainer) {
+        breakdownContainer.style.display = categoryBreakdownVisible ? "block" : "none";
+      }
+      toggleBtn.textContent = categoryBreakdownVisible ? "Hide details" : "Show details";
+    });
+  });
+
+  function renderVoidSales(){
+    const listEl = document.getElementById("voidSalesList");
+    if (!listEl) return;
+
+    const visibleVoidedSales = voidedSales.filter(sale => sale && (sale.voided || sale.status === "voided"));
+    if (!visibleVoidedSales.length) {
+      listEl.innerHTML = `<div class="empty" style="padding:24px 20px;"><p>No voided sales yet.</p></div>`;
+      return;
+    }
+
+    listEl.innerHTML = `
+      <div style="display:grid;gap:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:linear-gradient(135deg, var(--paper) 0%, var(--surface) 100%);">
+          <div>
+            <div style="font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;font-weight:700;">Audit trail</div>
+            <div style="font-size:15px;font-weight:700;">${visibleVoidedSales.length} voided transaction${visibleVoidedSales.length === 1 ? "" : "s"}</div>
+          </div>
+          <span class="badge badge-bad"><i class="badge-dot"></i>Voided sales</span>
+        </div>
+        ${visibleVoidedSales.map(sale => {
+          const itemSummary = (sale.items || []).map(item => `${item.qty} × ${item.name}`).join(", ");
+          return `
+            <div style="padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.04);">
+              <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">
+                <div>
+                  <div style="font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;font-weight:700;">Receipt #${sale.id}</div>
+                  <div style="font-size:13px;color:var(--ink);margin-top:2px;">${new Date(sale.time).toLocaleString()}</div>
+                </div>
+                <div class="mono" style="font-size:13px;font-weight:700;color:var(--red);">${money(sale.total || 0)}</div>
+              </div>
+              <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);font-size:12px;color:var(--ink-soft);line-height:1.5;">${itemSummary || "No items recorded"}</div>
+            </div>`;
+        }).join("")}
+      </div>`;
+  }
+
+  /* ---------------- Receipt modal ---------------- */
+  function openReceipt(sale){
+    const itemsHtml = sale.items.map(i=>
+      `<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;">
+        <span>${i.qty}× ${i.name}</span><span class="mono">${money(i.price*i.qty)}</span>
+      </div>`).join("");
+    $("#receiptDetail").innerHTML = `
+      <div class="success-mark">
+        <div class="ring">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>
+        </div>
+        <div style="font-weight:700;font-size:15px;">Payment received</div>
+        <div style="font-size:12px;color:var(--ink-soft);">Receipt #${sale.id} · ${sale.time.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
+      </div>
+      <div style="border-top:1px dashed var(--border);padding-top:12px;">${itemsHtml}</div>
+      <div style="border-top:1px dashed var(--border);margin-top:8px;padding-top:10px;">
+        <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-soft);padding:2px 0;"><span>Subtotal</span><span class="mono">${money(sale.subtotal)}</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;padding:8px 0 0;"><span>Total</span><span class="mono">${money(sale.total)}</span></div>
+        ${sale.payment==="cash" ? `
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);padding:6px 0 0;"><span>Cash tendered</span><span class="mono">${money(sale.tendered)}</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);"><span>Change</span><span class="mono">${money(sale.change)}</span></div>`
+        : `<div style="font-size:12px;color:var(--ink-soft);padding-top:6px;">Paid via GCash${sale.reference_code ? ` · Ref: <span class=\"mono\">${sale.reference_code}</span>` : ''}</div>`}
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+        <button class="btn btn-danger" id="receiptVoidBtn" data-sale-id="${sale.id}">Void sale</button>
+      </div>`;
+    $("#receiptModal").hidden = false;
+  }
+  $("#receiptDetail").addEventListener("click", async (e)=>{
+    const btn = e.target.closest("#receiptVoidBtn");
+    if (!btn) return;
+    const saleId = Number(btn.dataset.saleId || 0);
+    if (!saleId) return;
+    await voidLastSale(saleId);
+    $("#receiptModal").hidden = true;
+  });
+  $("#receiptClose").addEventListener("click", ()=> $("#receiptModal").hidden = true);
+  $("#receiptModal").addEventListener("click", e=>{ if(e.target===$("#receiptModal")) $("#receiptModal").hidden=true; });
+
+  $("#selectedDateDetailsClose").addEventListener("click", ()=> $("#selectedDateDetailsModal").hidden = true);
+  const selectedDateDetailsCloseBtn = $("#selectedDateDetailsCloseBtn");
+  if (selectedDateDetailsCloseBtn) {
+    selectedDateDetailsCloseBtn.addEventListener("click", ()=> $("#selectedDateDetailsModal").hidden = true);
+  }
+  $("#selectedDateDetailsModal").addEventListener("click", e=>{ if(e.target===$("#selectedDateDetailsModal")) $("#selectedDateDetailsModal").hidden=true; });
+
+  [
+    { id: 'selectedDateDetailsFilterAll', filter: 'all' },
+    { id: 'selectedDateDetailsFilterCash', filter: 'cash' },
+    { id: 'selectedDateDetailsFilterGcash', filter: 'gcash' },
+  ].forEach(({ id, filter }) => {
+    const btn = $("#" + id);
+    if (!btn) return;
+    btn.addEventListener("click", () => renderSelectedDateModalDetails(filter));
+  });
+
+  /* ---------------- Inventory ---------------- */
+  function populateCatFilter(){
+    $("#invCatFilter").innerHTML = `<option value="">All categories</option>` +
+      Object.keys(CATS).map(c=>`<option value="${c}">${c}</option>`).join("");
+  }
+  populateCatFilter();
+
+  function renderInventory(){
+    const q = $("#invSearch").value.trim().toLowerCase();
+    const cat = $("#invCatFilter").value;
+    const list = products.filter(p=>{
+      const mq = !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+      const mc = !cat || p.category===cat;
+      return mq && mc;
+    });
+    $("#invEmpty").hidden = list.length>0;
+    $("#invTableBody").innerHTML = list.map(p=>{
+      const pct = Math.min(100, Math.round((p.stock/(p.threshold*2||1))*100));
+      let status = `<span class="badge badge-ok"><i class="badge-dot"></i>In stock</span>`;
+      if(p.stock===0) status = `<span class="badge badge-bad"><i class="badge-dot"></i>Out of stock</span>`;
+      else if(p.stock<=p.threshold) status = `<span class="badge badge-warn"><i class="badge-dot"></i>Low stock</span>`;
+      return `<tr draggable="true" data-id="${p.id}" class="draggable-row">
+        <td><b>${p.name}</b></td>
+        <td class="mono">${p.sku}</td>
+        <td>${p.category}</td>
+        <td><span class="stockbar"><i style="width:${pct}%;background:${p.stock===0?'var(--red)':p.stock<=p.threshold?'var(--amber)':'var(--accent)'}"></i></span>${p.stock}</td>
+        <td class="mono">${money(p.price)}</td>
+        <td class="mono">${money(p.cost)}</td>
+        <td>${status}</td>
+        <td style="text-align:right;white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" data-act="stock" data-id="${p.id}">Add Stock</button>
+          <button class="btn btn-ghost btn-sm" data-act="edit" data-id="${p.id}">Edit</button>
+          <button class="btn btn-ghost btn-sm btn-danger" data-act="del" data-id="${p.id}">Delete</button>
+        </td>
+      </tr>`;
+    }).join("");
+    renderStockLogs();
+  }
+
+  function reorderInventory(sourceId, destId){
+    const sourceIndex = products.findIndex(p=>p.id===sourceId);
+    const destIndex = products.findIndex(p=>p.id===destId);
+    if(sourceIndex === -1 || destIndex === -1 || sourceIndex === destIndex) return;
+    const [moved] = products.splice(sourceIndex, 1);
+    products.splice(destIndex, 0, moved);
+    saveLocalData();
+    renderInventory();
+  }
+
+  $("#invTableBody").addEventListener("dragstart", e=>{
+    const tr = e.target.closest("tr");
+    if(!tr) return;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", tr.dataset.id || "");
+    tr.classList.add("dragging");
+  });
+
+  $("#invTableBody").addEventListener("dragend", e=>{
+    const tr = e.target.closest("tr");
+    if(tr) tr.classList.remove("dragging");
+    $$("#invTableBody tr").forEach(row=>row.classList.remove("drag-over"));
+  });
+
+  $("#invTableBody").addEventListener("dragover", e=>{
+    e.preventDefault();
+    const tr = e.target.closest("tr");
+    if(!tr) return;
+    tr.classList.add("drag-over");
+    e.dataTransfer.dropEffect = "move";
+  });
+
+  $("#invTableBody").addEventListener("dragleave", e=>{
+    const tr = e.target.closest("tr");
+    if(tr) tr.classList.remove("drag-over");
+  });
+
+  $("#invTableBody").addEventListener("drop", e=>{
+    e.preventDefault();
+    const target = e.target.closest("tr");
+    if(!target) return;
+    target.classList.remove("drag-over");
+    const sourceId = Number(e.dataTransfer.getData("text/plain"));
+    const destId = Number(target.dataset.id);
+    if(sourceId && destId && sourceId !== destId){
+      reorderInventory(sourceId, destId);
+    }
+  });
+
+  function renderStockLogs(){
+    if(stockLogs.length===0){
+      $("#stockLogsList").innerHTML = `<div class="empty" style="padding:20px 20px;"><p>No stock changes logged yet.</p></div>`;
+      return;
+    }
+    $("#stockLogsList").innerHTML = stockLogs.slice(0,8).map(log=>`
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-size:13px;font-weight:600;">${log.product_name}</div>
+          <div style="font-size:11px;color:var(--ink-soft);">${log.added_stock > 0 ? `Added ${log.added_stock} units` : "Updated stock"} · ${new Date(log.created_at).toLocaleString()}</div>
+        </div>
+        <div style="font-size:12px;font-weight:700;color:var(--accent-dark);">${log.new_stock} in stock</div>
+      </div>
+    `).join("");
+  }
+  $("#invSearch").addEventListener("input", renderInventory);
+  $("#invCatFilter").addEventListener("change", renderInventory);
+
+  let editingId = null;
+  function openModal(product){
+    editingId = product ? product.id : null;
+    $("#modalTitle").textContent = product ? "Edit product" : "Add product";
+    $("#f_name").value = product?.name || "";
+    $("#f_sku").value = product?.sku || "";
+    $("#f_category").value = product?.category || "Beverages";
+    $("#f_price").value = product?.price ?? "";
+    $("#f_cost").value = product?.cost ?? "";
+    $("#f_stock").value = product?.stock ?? "";
+    $("#f_threshold").value = product?.threshold ?? 10;
+    $("#productModal").hidden = false;
+  }
+  function closeModal(){ $("#productModal").hidden = true; }
+  $("#addProductBtn").addEventListener("click", ()=> openModal(null));
+  $("#modalClose").addEventListener("click", closeModal);
+  $("#modalCancel").addEventListener("click", closeModal);
+  $("#productModal").addEventListener("click", e=>{ if(e.target===$("#productModal")) closeModal(); });
+
+  $("#modalSave").addEventListener("click", async ()=>{
+    const name = $("#f_name").value.trim();
+    const sku = $("#f_sku").value.trim();
+    const price = parseFloat($("#f_price").value);
+    if(!name || !sku || isNaN(price)){ toast("Please fill in name, SKU and price"); return; }
+
+    const data = {
+      name, sku,
+      category: $("#f_category").value,
+      price,
+      cost: parseFloat($("#f_cost").value)||0,
+      stock: parseInt($("#f_stock").value)||0,
+      threshold: parseInt($("#f_threshold").value)||10,
+    };
+
+    try {
+      const client = await getSupabaseClient();
+      if (!client) {
+        toast("Supabase is not available right now", false);
+        return;
+      }
+
+      if(editingId){
+        const p = products.find(pp=>pp.id===editingId);
+        Object.assign(p, {id: editingId, ...data});
+        await client.from("pos_products").update({ ...data }).eq("id", editingId);
+        toast(`"${name}" updated`, true);
+      } else {
+        const id = Date.now();
+        const product = {id, ...data};
+        products.push(product);
+        await client.from("pos_products").insert([product]);
+        toast(`"${name}" added to inventory`, true);
+      }
+
+      saveLocalData();
+      closeModal();
+      renderInventory();
+      renderProducts();
+      renderDashboard();
+    } catch (err) {
+      console.error(err);
+      toast("Could not save product to Supabase", false);
+    }
+  });
+
+  $("#invTableBody").addEventListener("click", async e=>{
+    const b = e.target.closest("button[data-act]");
+    if(!b) return;
+    const id = Number(b.dataset.id);
+    const p = products.find(pp=>pp.id===id);
+    if(!p) return;
+    if(b.dataset.act==="edit") openModal(p);
+    if(b.dataset.act==="stock"){
+      const qty = parseInt(window.prompt(`Add stock for ${p.name}`, "0"), 10);
+      if(Number.isNaN(qty) || qty <= 0) return;
+      const previousStock = p.stock;
+      p.stock = previousStock + qty;
+      try {
+        const client = await getSupabaseClient();
+        if (client) {
+          await client.from("pos_products").update({ stock: p.stock }).eq("id", p.id);
+          const logEntry = {
+            id: Date.now(),
+            product_id: p.id,
+            product_name: p.name,
+            previous_stock: previousStock,
+            added_stock: qty,
+            new_stock: p.stock,
+            note: "Stock added from inventory",
+            created_at: new Date().toISOString(),
+          };
+          await client.from("pos_stock_logs").insert([logEntry]);
+          stockLogs.unshift(logEntry);
+        } else {
+          stockLogs.unshift({
+            id: Date.now(),
+            product_id: p.id,
+            product_name: p.name,
+            previous_stock: previousStock,
+            added_stock: qty,
+            new_stock: p.stock,
+            note: "Stock added from inventory",
+            created_at: new Date().toISOString(),
+          });
+        }
+        saveLocalData();
+        renderInventory();
+        renderProducts();
+        renderDashboard();
+        toast(`Added ${qty} to ${p.name}`, true);
+      } catch (err) {
+        console.error(err);
+        toast("Could not save stock update", false);
+      }
+    }
+    if(b.dataset.act==="del"){
+      if(confirm(`Remove "${p.name}" from inventory?`)){
+        products = products.filter(pp=>pp.id!==id);
+        cart = cart.filter(c=>c.productId!==id);
+        saveLocalData();
+        await deleteProductRemote(id);
+        renderInventory();
+        renderProducts();
+        renderDashboard();
+        toast(`"${p.name}" removed`, true);
+      }
+    }
+  });
+
+  /* ---------------- Sales History ---------------- */
+  function getSalesHistoryMonth(){
+    const monthFilter = $("#salesMonthFilter");
+    const now = new Date();
+    if (monthFilter && !monthFilter.value) {
+      monthFilter.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    }
+    return monthFilter?.value || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  function getMonthlySalesHistory(){
+    const selectedMonth = getSalesHistoryMonth();
+    if (window.getSalesForMonth) return window.getSalesForMonth(sales, selectedMonth);
+    const [year, month] = selectedMonth.split("-").map(Number);
+    return sales.filter(sale => {
+      const saleDate = new Date(sale.time);
+      return !Number.isNaN(saleDate.getTime())
+        && saleDate.getFullYear() === year
+        && saleDate.getMonth() === month - 1
+        && !(sale.voided || sale.status === "voided");
+    });
+  }
+
+  function exportSalesToExcel(){
+    if (typeof XLSX === 'undefined') {
+      toast('Office export unavailable. Ensure XLSX is loaded.', false);
+      return;
+    }
+
+    const monthlySales = getMonthlySalesHistory();
+    const rows = [
+      ['Monthly Sales Report', getSalesHistoryMonth()],
+      [],
+      ['Receipt', 'Date', 'Time', 'Items', 'Payment', 'Ref', 'Total', 'Cashier']
+    ];
+
+    monthlySales.forEach(s => {
+      const saleDate = new Date(s.time);
+      const itemCount = s.items.reduce((a,i)=>a+i.qty,0);
+      rows.push([
+        `#${s.id}`,
+        saleDate.toLocaleDateString(),
+        saleDate.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
+        itemCount,
+        s.payment,
+        s.reference_code || '',
+        s.total.toFixed(2),
+        s.cashier || 'Daci Pickle Hub'
+      ]);
+    });
+    const totalRevenue = monthlySales.reduce((total, sale) => total + Number(sale.total || 0), 0);
+    rows.push([]);
+    rows.push(['Monthly total', '', '', '', '', '', totalRevenue, '']);
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sales');
+    const fileName = `COUNTR-Sales-Report-${getSalesHistoryMonth()}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    toast('Sales export ready', true);
+  }
+
+  function renderSales(){
+    const visibleSales = getMonthlySalesHistory();
+    const pageCount = Math.max(1, Math.ceil(visibleSales.length / SALES_PAGE_SIZE));
+    salesHistoryPage = Math.min(salesHistoryPage, pageCount);
+    const pageStart = (salesHistoryPage - 1) * SALES_PAGE_SIZE;
+    const pageSales = visibleSales.slice(pageStart, pageStart + SALES_PAGE_SIZE);
+
+    const monthlyRevenue = visibleSales.reduce((total, sale) => total + Number(sale.total || 0), 0);
+    $("#salesCount").textContent = `${visibleSales.length} sales • ${money(monthlyRevenue)} total`;
+    $("#salesEmpty").hidden = visibleSales.length>0;
+    $("#salesPagination").hidden = visibleSales.length <= SALES_PAGE_SIZE;
+    $("#salesPageLabel").textContent = `Page ${salesHistoryPage} of ${pageCount}`;
+    $("#salesPrevBtn").disabled = salesHistoryPage <= 1;
+    $("#salesNextBtn").disabled = salesHistoryPage >= pageCount;
+    $("#salesTableBody").innerHTML = pageSales.map(s=>{
+      const itemCount = s.items.reduce((a,i)=>a+i.qty,0);
+      const saleDate = new Date(s.time);
+      return `<tr>
+        <td class="mono">#${s.id}</td>
+        <td>${saleDate.toLocaleDateString()}</td>
+        <td>${saleDate.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}</td>
+        <td>${itemCount} item${itemCount!==1?'s':''}</td>
+        <td style="text-transform:capitalize;">${s.payment}</td>
+        <td class="mono">${s.reference_code ? s.reference_code : ''}</td>
+        <td class="mono"><b>${money(s.total)}</b></td>
+        <td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-id="${s.id}">View</button></td>
+      </tr>`;
+    }).join("");
+  }
+  $("#salesMonthFilter").addEventListener("change", () => {
+    salesHistoryPage = 1;
+    renderSales();
+  });
+  $("#salesPrevBtn").addEventListener("click", ()=>{
+    if (salesHistoryPage <= 1) return;
+    salesHistoryPage--;
+    renderSales();
+  });
+  $("#salesNextBtn").addEventListener("click", ()=>{
+    salesHistoryPage++;
+    renderSales();
+  });
+  $("#salesTableBody").addEventListener("click", e=>{
+    const b = e.target.closest("button[data-id]");
+    if(!b) return;
+    const sale = sales.find(s=>s.id===Number(b.dataset.id));
+    if(sale) openReceipt(sale);
+  });
+
+  /* ---------------- Init ---------------- */
+  (async function init(){
+    await loadPosData();
+    renderCart();
+    renderDashboard();
+    renderInventory();
+    renderSales();
+    const exportBtn = $("#exportSalesBtn");
+    if (exportBtn) exportBtn.addEventListener("click", exportSalesToExcel);
+    const toggleBtn = $("#toggleSalesDayBtn");
+    if (toggleBtn) toggleBtn.addEventListener("click", () => {
+      productSalesDay = productSalesDay === "today" ? "yesterday" : "today";
+      toggleBtn.textContent = productSalesDay === "today" ? "Yesterday" : "Today";
+      renderDashboard();
+    });
+    const lastRestockBtn = $("#lastRestockBtn");
+    if (lastRestockBtn) {
+      lastRestockBtn.addEventListener("click", () => {
+        const snacksRestocks = stockLogs.filter(log => {
+          const product = products.find(p => p.id === log.product_id);
+          return product && product.category === "Snacks";
+        });
+        if (snacksRestocks.length === 0) {
+          toast("No restock history for Snacks", false);
+          return;
+        }
+        const lastRestock = snacksRestocks[0];
+        const restockDate = new Date(lastRestock.created_at);
+        toast(`Last restock: ${restockDate.toLocaleDateString()} ${restockDate.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} - Added ${lastRestock.added_stock} units`, true);
+      });
+    }
+    showView(initialView);
+  })();
+})();

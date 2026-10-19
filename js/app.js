@@ -106,7 +106,12 @@ document.addEventListener("DOMContentLoaded", async () => {
             .select('time_slot,court,customer_name,status,receipt_reference,created_at')
             .eq('booking_date', bookingDate);
           if (error) throw error;
-          return { bookings: rows || [] };
+          const { data: blockedRows, error: blockedError } = await supabaseClient
+            .from('blocked_time_slots')
+            .select('time_slot,court')
+            .eq('blocked_date', bookingDate);
+          if (blockedError) throw blockedError;
+          return { bookings: [...(rows || []), ...(blockedRows || []).map(row => ({ ...row, status: 'blocked', customer_name: 'Unavailable' }))] };
         }
 
         if (action === 'create-booking') {
@@ -237,7 +242,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   let bookedSlots = {};
 
   // Helper function to get initials from a name
-  window.getInitials = function(name) {
+  function getInitials(name) {
     if (!name) return '?';
     return name
       .split(' ')
@@ -245,10 +250,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       .join('')
       .toUpperCase()
       .substring(0, 2);
-  };
-
-  // Alias for internal use
-  const getInitials = window.getInitials;
+  }
 
   // Helper function to get remaining time for pending slots (60 mins)
   function getRemainingTime(timestamp) {
@@ -281,11 +283,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       const result = await callBackendAPI('get-booked-slots', { bookingDate: dk });
       if (result.bookings && Array.isArray(result.bookings)) {
         result.bookings.forEach(row => {
-          const courtIndex = COURTS.indexOf(row.court);
+          const courtIndex = getCourtIndex(row.court || row.court_name);
           if (courtIndex >= 0 && row.time_slot) {
             const status = (row.status || '').toString().toLowerCase();
 
             const key = `${dk}|${row.time_slot}|${courtIndex}`;
+
+            if (status === 'blocked') {
+              bookedSlots[key] = 'Unavailable';
+              delete pendingSlotsWithTimer[key];
+              return;
+            }
 
             if (status === 'pending') {
               // Reconstruct pending timer from backend `created_at` so the timer
@@ -369,7 +377,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     '11:00 PM - 12:00 AM'
   ];
 
-  const COURTS = ['Court One', 'Court Two'];
+  const COURTS = ['Court One', 'Court 2'];
+  const getCourtIndex = value => {
+    const court = String(value || '').trim().toLowerCase();
+    const compact = court.replace(/[\s_-]+/g, '');
+    if (compact.includes('courtone') || compact.includes('court1') || compact === '1') return 0;
+    if (court.includes('training') || compact.includes('courttwo') || compact.includes('court2') || compact === '2') return 1;
+    return -1;
+  };
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -392,17 +407,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     return `${DAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
   }
 
-  // Day rate: 6AM-6PM (slots starting 6AM through 5PM)
-  // Night rate: 6PM-6AM (slots starting 6PM through 5AM)
-  function getRate(slot) {
+  // Monday-Thursday: ₱500, except Monday 1AM-5AM: ₱550. Friday-Sunday: ₱550.
+  function getRate(slot, dateValue) {
     if (TEST_MODE_FORCE_ONE_PHP) {
       return 1;
     }
-    const daySlots = [
-      '6:00 AM', '7:00 AM', '8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM',
-      '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM'
-    ];
-    return daySlots.some(t => slot.startsWith(t)) ? 450 : 500;
+    const day = new Date(`${dateValue}T00:00:00`).getDay();
+    const startTime = String(slot || '').split('-')[0].trim().toUpperCase();
+    const timeMatch = startTime.match(/^(\d{1,2})(?::\d{2})?\s*(AM|PM)?$/);
+    const startHour = timeMatch ? Number(timeMatch[1]) % 12 + (timeMatch[2] === 'PM' ? 12 : 0) : null;
+    const isMondayEarlyMorning = day === 1 && startHour >= 1 && startHour < 5;
+    return day === 0 || day === 5 || day === 6 || isMondayEarlyMorning ? 550 : 500;
   }
 
   // Helper function to check if a slot is in the past
@@ -507,7 +522,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         const isPendingActive = isPendingTimerActive(key);
 
-        // If the slot is booked in Supabase, mark as booked and show initials
+        // If the slot is booked or blocked in Supabase, mark it unavailable.
         if (bookedSlots[key]) {
           btn.classList.add('slot-booked');
           btn.textContent = getInitials(bookedSlots[key]);
@@ -551,7 +566,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   function updateCart() {
     const count = selectedSlots.size;
     const total = [...selectedSlots].reduce((sum, key) => {
-      return sum + getRate(key.split('|')[1]);
+      return sum + getRate(key.split('|')[1], key.split('|')[0]);
     }, 0);
 
     document.getElementById('cartCount').textContent = `${count} slot${count !== 1 ? 's' : ''} selected`;
@@ -573,10 +588,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.openModal = function() {
     // Open the reference search modal (no selection required)
     const refInput = document.getElementById('searchRef');
-    if (refInput) {
-      refInput.value = '';
-      refInput.placeholder = 'DACI-00000000';
-    }
+    if (refInput) refInput.value = '';
     document.getElementById('bookingModal').classList.add('open');
     setTimeout(() => { const el = document.getElementById('searchRef'); if (el) el.focus(); }, 120);
     updateCheckButtonState();
@@ -607,7 +619,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const slot = parts[1];
       const courtIndex = parseInt(parts[2], 10);
       const court = COURTS[courtIndex] || 'Court';
-      const price = getRate(slot);
+      const price = getRate(slot, date);
       total += price;
 
       const card = document.createElement('div');
@@ -895,7 +907,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const sortedDates = Object.keys(dateGroups).sort((a, b) => new Date(a) - new Date(b));
       
       let courtSections = '';
-      const courtOrder = ['Court One', 'Court Two'];
+      const courtOrder = ['Court One', 'Court 2'];
       const timeEmojis = ['🕚', '🕛', '🕐', '🕑', '', '🕔', '🕕', '🕖', '🕗', '🕘', '🕙'];
       let emojiIndex = 0;
       
@@ -922,7 +934,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 Hello ${customerName},
 
-Thank you for booking with DACI Pickle Hub! Your reservation has been successfully confirmed. ✅
+Thank you for booking with Daci Pickle Hub! Your reservation has been successfully confirmed. ✅
 
 Name: ${firstBooking.customer_name || ''}
 Phone: ${firstBooking.phone_number || ''}
@@ -991,8 +1003,8 @@ Phone: ${firstBooking.phone_number || ''}
           time_slot: slot,
           court_name: COURTS[parseInt(courtIndex)],
           court: COURTS[parseInt(courtIndex)],
-          price: getRate(slot),
-          rate: getRate(slot),
+          price: getRate(slot, date),
+          rate: getRate(slot, date),
           status: 'pending',
           fromExistingBooking: false,
           persistedInDb: false
@@ -1085,7 +1097,6 @@ Phone: ${firstBooking.phone_number || ''}
 
   const searchInputEl = document.getElementById('searchRef');
   if (searchInputEl) {
-    searchInputEl.placeholder = 'DACI-00000000';
     searchInputEl.addEventListener('input', updateCheckButtonState);
     searchInputEl.addEventListener('keyup', (e) => {
       if (e.key === 'Enter') {
@@ -1785,7 +1796,7 @@ Phone: ${firstBooking.phone_number || ''}
     // For new bookings, mark slots as pending with 30-minute timer
     if (!isExistingBooking) {
       entriesToRender.forEach(entry => {
-        const courtIndex = COURTS.indexOf(entry.court_name || entry.court);
+        const courtIndex = getCourtIndex(entry.court_name || entry.court);
         const key = `${entry.booking_date}|${entry.booking_time || entry.time_slot}|${courtIndex}`;
         pendingSlotsWithTimer[key] = Date.now(); // 30-minute pending timer
       });

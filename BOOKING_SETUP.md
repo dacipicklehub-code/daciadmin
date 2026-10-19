@@ -30,13 +30,15 @@ Messenger notification sent with details
 
 ## Required Database Columns
 
-Add these to your `bookings` table:
+Run `supabase/booking_confirmation_columns.sql` in your Supabase SQL Editor to add these to your `bookings` table:
 
 ```sql
-ALTER TABLE bookings 
-ADD COLUMN messenger_id TEXT,
-ADD COLUMN confirmed_at TIMESTAMP WITH TIME ZONE,
-ADD COLUMN confirmed_by TEXT;
+ALTER TABLE public.bookings
+  ADD COLUMN IF NOT EXISTS messenger_id text,
+  ADD COLUMN IF NOT EXISTS confirmed_at timestamptz,
+  ADD COLUMN IF NOT EXISTS confirmed_by text;
+
+NOTIFY pgrst, 'reload schema';
 ```
 
 **Column Details:**
@@ -122,7 +124,7 @@ When customer is confirmed, they receive:
 
 📝 *Notes:* Special request text (if any)
 
-Thank you for booking with Pickle Social! 🎾
+Thank you for booking with Daci Pickle Hub! 🎾
 See you soon!
 ```
 

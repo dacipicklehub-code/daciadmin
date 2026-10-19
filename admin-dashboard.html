@@ -3,57 +3,91 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no"/>
-  <title>Admin Dashboard - DACI Pickle Hub</title>
+  <title>Daci Pickle Hub | Admin Dashboard</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="icon" href="logo.jpeg" type="image/jpeg">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#15803d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
   <link rel="stylesheet" href="css/admin-dashboard.css">
 </head>
 
 <body>
-<div class="app">
-<nav>
-  <div class="nav-brand">
-    <a href="https://picklesocialcebu.site" target="_blank" title="Visit DACI Pickle Hub">
-      <img src="logo.jpeg" alt="DACI Pickle Hub logo" class="nav-logo">
-    </a>
-    DACI Pickle Hub <span>Admin Dashboard</span>
+<div id="pendingBookingAlert" class="pending-alert" role="status" aria-live="polite" onclick="scrollToPendingBookings()">
+  <div class="pending-alert-content">
+    <div class="pending-alert-title">New Pending Booking</div>
+    <div class="pending-alert-message" id="pendingBookingAlertMessage">Check it now!</div>
   </div>
-  <div class="nav-actions">
-    <button class="btn-secondary" onclick="logout()">Logout</button>
+  <button type="button" class="pending-alert-action" onclick="scrollToPendingBookings(event)">View Now</button>
+</div>
+<div class="app">
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+<aside class="sidebar" id="adminSidebar" aria-label="Admin navigation">
+  <div class="sidebar-header">
+    <div class="sidebar-mark">DPH</div>
+    <div>
+      <strong>Daci Pickle Hub</strong>
+      <span>Operations dashboard</span>
+    </div>
+    <button class="sidebar-close" type="button" onclick="closeSidebar()" aria-label="Close navigation">&times;</button>
+  </div>
+  <div class="sidebar-section-label">Workspace</div>
+  <div class="sidebar-nav">
+    <a class="sidebar-link active" href="#top" onclick="closeSidebar()"><span class="sidebar-icon">⌂</span>Overview</a>
+    <a class="sidebar-link" href="#bookings" onclick="closeSidebar()"><span class="sidebar-icon">▣</span>Bookings</a>
+    <button class="sidebar-link sidebar-button" type="button" onclick="openCalendarModal(); closeSidebar()"><span class="sidebar-icon calendar-sidebar-icon" aria-hidden="true"></span>Booking Calendar</button>
+    <button class="sidebar-link sidebar-button" type="button" onclick="openPosSetupModal(); closeSidebar()"><span class="sidebar-icon">₱</span>Point of Sale</button>
+  </div>
+  <div class="sidebar-section-label">Tools</div>
+  <div class="sidebar-nav">
+    <button class="sidebar-link sidebar-button" type="button" onclick="openActivityLogsModal(); closeSidebar()"><span class="sidebar-icon">≡</span>Activity Logs</button>
+    <button class="sidebar-link sidebar-button" type="button" onclick="openAddBookingModal(); closeSidebar()"><span class="sidebar-icon">＋</span>Admin Book</button>
+    <button class="sidebar-link sidebar-button" type="button" onclick="openBlockTimesModal(); closeSidebar()"><span class="sidebar-icon">◷</span>Block Timeslots</button>
+    <button class="sidebar-link sidebar-button" type="button" onclick="openExtendBookingModal(); closeSidebar()"><span class="sidebar-icon">＋</span>Extend Booking Time</button>
+    <button class="sidebar-link sidebar-button expired-bookings-link" type="button" onclick="openExpiredBookingsModal(); closeSidebar()"><span class="sidebar-icon expired-booking-icon" aria-hidden="true"></span>Expired Bookings</button>
+  </div>
+  <div class="sidebar-footer">
+    <div class="sidebar-admin" id="sidebarAdminProfile">
+      <div class="sidebar-admin-avatar" id="sidebarAdminAvatar">A</div>
+      <div class="sidebar-admin-copy">
+        <span>Signed in as</span>
+        <strong id="sidebarAdminName">Loading account...</strong>
+      </div>
+    </div>
+    <div class="sidebar-status"><span></span>System connected</div>
+    <button class="sidebar-logout" type="button" onclick="logout()">Sign out <span>→</span></button>
+  </div>
+</aside>
+<nav>
+  <button class="menu-toggle" type="button" onclick="toggleSidebar()" aria-label="Open navigation" aria-controls="adminSidebar" aria-expanded="false">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="nav-brand">
+    <a href="https://picklesocialcebu.site" target="_blank" title="Visit Daci Pickle Hub">
+      <img src="logo.jpeg" alt="Daci Pickle Hub logo" class="nav-logo">
+    </a>
+    Daci Pickle Hub <span>Admin Dashboard</span>
   </div>
 </nav>
 
-<main>
+<main id="top">
   <div class="container">
     <!-- Header -->
     <div class="dashboard-header">
       <div class="dashboard-title">
-        <h1>Management Dashboard</h1>
-        <p class="dashboard-copy">Search bookings, manage payments, and export report data.</p>
+        <h1>Daci Pickle Hub Dashboard</h1>
+        <p class="dashboard-copy">Manage bookings, payments, and daily operations in one place.</p>
       </div>
       <div class="header-controls">
         <input type="text" id="searchInput" class="filter-input" placeholder="Search reference, name, phone" oninput="applyFilters()">
-        <select id="courtFilter" class="filter-input" onchange="applyFilters()">
-          <option value="">All Courts</option>
-          <option value="Court One">Court One</option>
-          <option value="Court Two">Court Two</option>
-        </select>
         <input type="date" id="filterFrom" class="filter-input" onchange="applyFilters()">
-        <select id="filterStatus" class="filter-input" onchange="applyFilters()">
-          <option value="">All Status</option>
-          <option value="pending">Pending</option>
-          <option value="unpaid">Unpaid</option>
-          <option value="paid">Paid</option>
-          <option value="completed">Completed</option>
-          <option value="cancelled">Cancelled</option>
-          <option value="expired">Expired</option>
-        </select>
-        <a class="btn-secondary" href="Booking Calendar.html">Booking Calendar</a>
-        <button class="btn-secondary" onclick="openCalendarModal()">Calendar</button>
-        <button class="btn-primary" onclick="refreshData()">Refresh</button>
+        <div class="dashboard-actions">
+          <button class="btn-primary refresh-button" onclick="refreshData()">Refresh</button>
+        </div>
       </div>
     </div>
 
@@ -75,7 +109,7 @@
     </div>
 
     <!-- Bookings Table -->
-    <div class="bookings-section">
+    <div class="bookings-section" id="bookings">
       <div class="bookings-toolbar">
         <div>
           <h2>Bookings</h2>
@@ -95,7 +129,7 @@
         <table class="bookings-table">
           <thead>
             <tr>
-              <th><input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this)"></th>
+              <th></th>
               <th>Reference</th>
               <th>Name</th>
               <th>Phone</th>
@@ -105,12 +139,13 @@
               <th>Book Time</th>
               <th>Amount</th>
               <th>Status</th>
+              <th>Confirmed By</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="bookingsTableBody">
             <tr>
-              <td colspan="11" class="loading-cell">Loading bookings...</td>
+              <td colspan="12" class="loading-cell">Loading bookings...</td>
             </tr>
           </tbody>
         </table>
@@ -120,7 +155,7 @@
     <!-- Pagination -->
     <div class="pagination">
       <button class="btn-secondary" id="prevPageBtn" onclick="previousPage()" disabled>Previous</button>
-      <span id="pageInfo">Page 1</span>
+      <div class="page-buttons" id="pageButtons"></div>
       <button class="btn-secondary" id="nextPageBtn" onclick="nextPage()" disabled>Next</button>
     </div>
   </div>
@@ -182,46 +217,43 @@
 <div class="modal" id="addBookingModal">
   <div class="modal-content">
     <div class="modal-header">
-      <h3>Add Booking</h3>
+      <h3>Admin Book</h3>
       <button class="modal-close" onclick="closeAddBookingModal()">×</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label>Customer Name</label>
-        <input type="text" id="addBookingCustomerName" placeholder="Enter customer name">
+        <label for="addBookingCustomerName">Facebook Name</label>
+        <input type="text" id="addBookingCustomerName" placeholder="Enter Facebook Name" required>
       </div>
       <div class="form-group">
-        <label>Phone Number</label>
-        <input type="text" id="addBookingPhone" placeholder="Enter phone number">
+        <label for="addBookingPhone">Phone Number <span class="optional-label">(optional)</span></label>
+        <input type="text" id="addBookingPhone" placeholder="Phone number: optional">
       </div>
       <div class="form-group">
         <label>Booking Date</label>
-        <input type="date" id="addBookingDate" onchange="updateAddBookingRate()">
+        <input type="date" id="addBookingDate" onchange="loadAdminBookingAvailability()">
       </div>
       <div class="form-group">
-        <label>Time</label>
-        <input type="text" id="addBookingTime" placeholder="e.g. 11:00 PM or 23:00">
-      </div>
-      <div class="form-group">
-        <label>Court</label>
-        <select id="addBookingCourt">
-          <option value="">Select Court</option>
-          <option value="Court One">Court One</option>
-          <option value="Court Two">Court Two</option>
+        <label for="addBookingTime">Booking Time</label>
+        <select id="addBookingTime" class="slot-value-source" multiple onchange="updateAddBookingRate()">
+          <option value="">Select one or more available times</option>
         </select>
+        <div id="adminBookingAvailability" class="admin-booking-availability" aria-live="polite"></div>
+      </div>
+      <div class="form-group">
+        <input type="hidden" id="addBookingCourt" value="Court One">
       </div>
       <div class="form-group">
         <label>Status</label>
-        <select id="addBookingStatus">
-          <option value="paid">Paid</option>
+        <select id="addBookingStatus" disabled>
           <option value="pending">Pending</option>
-          <option value="unpaid">Unpaid</option>
         </select>
+        <small class="form-hint">Admin bookings are saved as pending until confirmed.</small>
       </div>
       <div class="form-group">
         <label>Rate</label>
-        <div class="rate-display" id="addBookingRateValue">₱400</div>
-        <div class="rate-hint">Same rate: Weekdays ₱400 · Weekends ₱450</div>
+        <div class="rate-display" id="addBookingRateValue">₱500</div>
+        <div class="rate-hint">Court 1: Monday–Thursday ₱500 · Friday–Sunday ₱550 · Court 2: ₱350</div>
       </div>
       <div class="form-group">
         <label>Notes</label>
@@ -230,7 +262,28 @@
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeAddBookingModal()">Cancel</button>
-      <button class="btn-primary" onclick="submitAddBooking()">Save Booking</button>
+      <button class="btn-primary" id="reviewAdminBookingBtn" onclick="reviewAdminBooking()">Review Booking</button>
+    </div>
+  </div>
+</div>
+
+<!-- Admin Booking Review Modal -->
+<div class="modal admin-booking-review-modal" id="adminBookingReview" role="dialog" aria-modal="true" aria-labelledby="adminBookingReviewTitle" hidden>
+  <div class="modal-content admin-booking-review-content">
+    <div class="modal-header">
+      <div>
+        <span class="calendar-modal-eyebrow">Admin Book</span>
+        <h3 id="adminBookingReviewTitle">Review Booking</h3>
+      </div>
+      <button class="modal-close" type="button" onclick="editAdminBookingSelection()" aria-label="Close booking review">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="admin-booking-review-status">Pending</div>
+      <div id="adminBookingReviewDetails" class="admin-booking-review-details"></div>
+    </div>
+    <div class="modal-footer admin-booking-review-actions">
+      <button type="button" class="btn-secondary" onclick="editAdminBookingSelection()">Edit Selection</button>
+      <button type="button" class="btn-primary" onclick="submitAddBooking()">Confirm & Save</button>
     </div>
   </div>
 </div>
@@ -322,7 +375,7 @@
       <button class="modal-close" onclick="closeBookingConfirmationModal()">×</button>
     </div>
     <div class="modal-body">
-      <div style="background: #f4fff7; padding: 16px; border-radius: 8px; border: 1px solid rgba(34,197,94,0.16); white-space: pre-wrap; word-wrap: break-word; font-family: 'DM Sans', monospace; font-size: 0.9rem; line-height: 1.6; color: #123524;" id="confirmationText"></div>
+      <div class="confirmation-message" id="confirmationText"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeBookingConfirmationModal()">Close</button>
@@ -366,6 +419,42 @@
           <div class="summary-value" id="monthlyCount">0</div>
         </div>
       </div>
+      <section class="overview-insights" aria-labelledby="salesInsightsTitle">
+        <div class="overview-insights-header">
+          <div>
+            <h4 id="salesInsightsTitle">Sales Insights</h4>
+            <p id="salesInsightsPeriod">Monthly sales by court</p>
+          </div>
+          <span class="insights-badge">By court</span>
+        </div>
+        <div class="insight-stat-grid">
+          <div class="insight-stat court-one-insight">
+            <span>Court 1 sales</span>
+            <strong id="courtOneSales">₱0.00</strong>
+            <small id="courtOneSalesCount">0 bookings</small>
+          </div>
+          <div class="insight-stat training-court-insight">
+            <span>Court 2 sales</span>
+            <strong id="trainingCourtSales">₱0.00</strong>
+            <small id="trainingCourtSalesCount">0 bookings</small>
+          </div>
+          <div class="insight-stat overall-insight">
+            <span>Top court</span>
+            <strong id="topSalesCourt">No sales yet</strong>
+            <small id="averageBookingValue">Average booking: ₱0.00</small>
+          </div>
+        </div>
+        <div class="sales-bar-chart" aria-label="Sales by court bar graph">
+          <div class="sales-bar-row">
+            <div class="sales-bar-label"><span>Court 1</span><strong id="courtOneBarValue">₱0.00</strong></div>
+            <div class="sales-bar-track"><div class="sales-bar-fill court-one-bar" id="courtOneSalesBar"></div></div>
+          </div>
+          <div class="sales-bar-row">
+            <div class="sales-bar-label"><span>Court 2</span><strong id="trainingCourtBarValue">₱0.00</strong></div>
+            <div class="sales-bar-track"><div class="sales-bar-fill training-court-bar" id="trainingCourtSalesBar"></div></div>
+          </div>
+        </div>
+      </section>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeEarningsModal()">Close</button>
@@ -432,11 +521,14 @@
 </div>
 
 <!-- Booking Schedule Modal -->
-<div class="modal" id="calendarModal">
-  <div class="modal-content calendar-modal-content">
+<div class="modal" id="calendarModal" role="dialog" aria-modal="true" aria-labelledby="calendarModalTitle" onclick="if (event.target === this) closeCalendarModal()">
+  <div class="modal-content calendar-modal-content" onclick="event.stopPropagation()">
     <div class="modal-header">
-      <h3>Booking Schedule</h3>
-      <button class="modal-close" onclick="closeCalendarModal()">×</button>
+      <div>
+        <span class="calendar-modal-eyebrow">Operations / Availability</span>
+        <h3 id="calendarModalTitle">Booking Schedule</h3>
+      </div>
+      <button class="modal-close" type="button" onclick="closeCalendarModal()" aria-label="Close booking schedule">×</button>
     </div>
     <div class="modal-body">
       <div class="calendar-toolbar">
@@ -446,19 +538,160 @@
           <button class="btn-secondary" type="button" onclick="changeScheduleDay(1)">→</button>
           <button class="btn-secondary" type="button" onclick="goToScheduleToday()">Today</button>
         </div>
-        <button class="btn-primary" type="button" onclick="renderScheduleModal()">Refresh</button>
-      </div>
-      <div id="scheduleGrid" class="schedule-grid"></div>
-      <div class="calendar-detail-card">
-        <div class="calendar-detail-header">
-          <h4 id="scheduleDayDetailTitle">Selected day</h4>
-          <div id="scheduleDayDetailSummary" class="calendar-day-summary">0 bookings</div>
+        <div class="calendar-toolbar-actions">
+          <button class="btn-secondary" type="button" onclick="openBlockTimesModal()">Block timeslots</button>
+          <button class="btn-primary" type="button" onclick="renderScheduleModal()">Refresh</button>
         </div>
-        <div id="scheduleDayDetailList" class="modal-list"></div>
+      </div>
+      <div id="scheduleBookingCounts" class="schedule-booking-counts" aria-live="polite"></div>
+      <div id="scheduleGrid" class="schedule-grid"></div>
+      <div class="calendar-day-navigation" aria-label="Change calendar date">
+        <button class="btn-secondary" type="button" onclick="changeScheduleDay(-1)">← Previous date</button>
+        <button class="btn-secondary" type="button" onclick="changeScheduleDay(1)">Next date →</button>
       </div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeCalendarModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Block Timeslots Modal -->
+<div class="modal" id="blockTimesModal">
+  <div class="modal-content block-times-modal-content">
+    <div class="modal-header">
+      <h3>Block timeslots</h3>
+      <button class="modal-close" onclick="closeBlockTimesModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="blockTimesDate">Date</label>
+        <input type="date" id="blockTimesDate" onchange="loadBlockTimesForDate()">
+      </div>
+      <p class="block-times-help">Select one or more court times to make unavailable for bookings.</p>
+      <div id="blockTimesOptions" class="block-times-options"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeBlockTimesModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveBlockedTimes()">Save blocked times</button>
+    </div>
+  </div>
+</div>
+
+<!-- Extend Booking Time Modal -->
+<div class="modal" id="extendBookingModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Extend booking time</h3>
+      <button class="modal-close" onclick="closeExtendBookingModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="extendBookingCustomer">Customer / player</label>
+        <select id="extendBookingCustomer" class="slot-value-source" tabindex="-1" aria-hidden="true"></select>
+        <div class="customer-picker" id="extendCustomerPicker" role="listbox" aria-label="Customers and players"></div>
+      </div>
+      <div class="form-group">
+        <label for="extendBookingDate">Date</label>
+        <input type="date" id="extendBookingDate" onchange="updateExtendBookingFields()">
+      </div>
+      <div class="form-group">
+        <label for="extendBookingCourt">Court</label>
+        <select id="extendBookingCourt" onchange="updateExtendBookingFields()"></select>
+      </div>
+      <div class="form-group">
+        <label for="extendBookingTime">Add time slot</label>
+        <select id="extendBookingTime" class="slot-value-source" tabindex="-1" aria-hidden="true"></select>
+        <div class="slot-picker" id="extendTimeSlotPicker" role="listbox" aria-label="Available booking time slots"></div>
+        <div class="selected-slot-status" id="extendSelectedSlotStatus" aria-live="polite"></div>
+        <div class="slot-status-legend" aria-label="Time slot status legend">
+          <span class="legend-item available"><i class="legend-dot"></i>Available</span>
+          <span class="legend-item booked"><i class="legend-dot"></i>Booked</span>
+          <span class="legend-item already-added"><i class="legend-dot"></i>Already added</span>
+          <span class="legend-item pending"><i class="legend-dot"></i>Pending</span>
+          <span class="legend-item blocked"><i class="legend-dot"></i>Blocked</span>
+        </div>
+        <div class="rate-hint">The selected hour will be added to this booking.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeExtendBookingModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitExtendBooking()">Add time</button>
+    </div>
+  </div>
+</div>
+
+<!-- Expired Bookings Modal -->
+<div class="modal" id="expiredBookingsModal">
+  <div class="modal-content expired-bookings-modal-content">
+    <div class="modal-header">
+      <div>
+        <h3>Expired bookings</h3>
+        <p class="modal-subtitle" id="expiredBookingsSummary">Review expired booking slots before deleting.</p>
+      </div>
+      <button class="modal-close" onclick="closeExpiredBookingsModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="expired-bookings-toolbar">
+        <span class="expired-count" id="expiredBookingsCount">0 expired</span>
+        <button class="btn-secondary delete-btn" type="button" id="deleteAllExpiredBtn" onclick="deleteAllExpiredBookings()" disabled>Delete all expired</button>
+      </div>
+      <div class="expired-booking-list" id="expiredBookingList"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeExpiredBookingsModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Activity Logs Modal -->
+<div class="modal" id="activityLogsModal" role="dialog" aria-modal="true" aria-labelledby="activityLogsModalTitle" onclick="if (event.target === this) closeActivityLogsModal()">
+  <div class="modal-content activity-logs-modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div>
+        <h3 id="activityLogsModalTitle">Activity logs</h3>
+        <p class="modal-subtitle">Recent booking and availability changes.</p>
+      </div>
+      <button class="modal-close" type="button" onclick="closeActivityLogsModal()" aria-label="Close activity logs">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="activity-logs-toolbar">
+        <span class="modal-subtitle" id="activityLogsStatus" aria-live="polite">Loading logs...</span>
+        <button class="btn-secondary" type="button" onclick="loadActivityLogs()">Refresh</button>
+      </div>
+      <div class="activity-log-list" id="activityLogList"></div>
+      <div class="activity-logs-pagination" id="activityLogsPagination"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" type="button" onclick="closeActivityLogsModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Point of Sale Setup Notice -->
+<div class="modal" id="posSetupModal" role="dialog" aria-modal="true" aria-labelledby="posSetupModalTitle" onclick="if (event.target === this) closePosSetupModal()">
+  <div class="modal-content pos-setup-modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div>
+        <span class="calendar-modal-eyebrow">Feature access</span>
+        <h3 id="posSetupModalTitle">Point of Sale Setup</h3>
+      </div>
+      <button class="modal-close" type="button" onclick="closePosSetupModal()" aria-label="Close Point of Sale setup notice">×</button>
+    </div>
+    <div class="modal-body">
+      <p>Point of Sale (POS) helps manage on-site sales and shop items from one place, including:</p>
+      <ul class="pos-setup-features">
+        <li>Inventory and product tracking</li>
+        <li>Beverage sales</li>
+        <li>Stock levels and updates</li>
+        <li>Equipment and other items for sale</li>
+        <li>Sales checkout and receipts</li>
+      </ul>
+      <p>The Point of Sale feature is currently locked. A one-time setup fee of <strong>₱2,000 PHP</strong> is required to enable it.</p>
+      <p>Message the developer to avail this feature.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-primary" type="button" onclick="closePosSetupModal()">Got it</button>
     </div>
   </div>
 </div>

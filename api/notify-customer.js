@@ -58,13 +58,13 @@ function formatNotificationMessage(booking, newStatus) {
 
   switch (newStatus?.toLowerCase()) {
     case 'confirmed':
-      message = `✅ Great news! Your booking (${booking.reference_code}) has been confirmed!\n\n📅 ${booking.booking_date}\n⏰ ${booking.time_slot}\n🎾 ${booking.court}\n\nSee you soon at DACI Pickle Hub! 🎾`;
+      message = `✅ Great news! Your booking (${booking.reference_code}) has been confirmed!\n\n📅 ${booking.booking_date}\n⏰ ${booking.time_slot}\n🎾 ${booking.court}\n\nSee you soon at Daci Pickle Hub! 🎾`;
       break;
     case 'paid':
       message = `💳 Payment received! Your booking (${booking.reference_code}) is all set.\n\nWe'll see you on ${booking.booking_date} at ${booking.time_slot} on ${booking.court}.`;
       break;
     case 'completed':
-      message = `✨ Your game is complete! Thanks for playing at DACI Pickle Hub 🎾\n\nWe hope you had fun! See you next time.`;
+      message = `✨ Your game is complete! Thanks for playing at Daci Pickle Hub 🎾\n\nWe hope you had fun! See you next time.`;
       break;
     case 'cancelled':
       message = `❌ Your booking (${booking.reference_code}) has been cancelled.\n\nIf you have questions, please contact our support team.`;

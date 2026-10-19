@@ -10,6 +10,549 @@ let selectedBookingIds = new Set();
 let currentBookingDetailsGroup = null;
 let calendarViewDate = new Date();
 let selectedCalendarDate = null;
+let blockedTimeSlots = [];
+const adminLogsStorageKey = 'pickleAdminLogs';
+const activityLogsPerPage = 10;
+let activityLogs = [];
+let activityLogsPage = 1;
+const pendingNotificationState = {
+  knownPendingIds: new Set(),
+  hasInitialized: false,
+  lastAlertAt: 0,
+  cooldownMs: 10000
+};
+let pendingAlertAudioContext = null;
+let leaderboardMode = 'monthly';
+let adminBookingSelectedCourt = 'Court One';
+let adminBookingSelectedSlots = new Set();
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('adminSidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  const toggle = document.querySelector('.menu-toggle');
+  if (!sidebar || !overlay) return;
+  const isOpen = sidebar.classList.toggle('open');
+  overlay.classList.toggle('visible', isOpen);
+  document.body.classList.toggle('sidebar-open', isOpen);
+  if (toggle) toggle.setAttribute('aria-expanded', String(isOpen));
+}
+
+function closeSidebar() {
+  const sidebar = document.getElementById('adminSidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  const toggle = document.querySelector('.menu-toggle');
+  if (!sidebar || !overlay) return;
+  sidebar.classList.remove('open');
+  overlay.classList.remove('visible');
+  document.body.classList.remove('sidebar-open');
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+}
+
+function openPosSetupModal() {
+  const modal = document.getElementById('posSetupModal');
+  if (!modal) return;
+  modal.classList.add('open');
+  document.body.classList.add('modal-open');
+  modal.querySelector('.modal-close')?.focus();
+}
+
+function closePosSetupModal() {
+  const modal = document.getElementById('posSetupModal');
+  if (!modal) return;
+  modal.classList.remove('open');
+  if (!document.querySelector('.modal.open')) {
+    document.body.classList.remove('modal-open');
+  }
+}
+
+function getCurrentAdmin() {
+  try {
+    const profile = sessionStorage.getItem('adminProfile') || localStorage.getItem('adminProfile');
+    return profile ? JSON.parse(profile) : null;
+  } catch (err) {
+    console.error('Failed to read admin profile:', err);
+    return null;
+  }
+}
+
+function updateAdminProfileBadge() {
+  const sidebarName = document.getElementById('sidebarAdminName');
+  const sidebarAvatar = document.getElementById('sidebarAdminAvatar');
+  const currentAdmin = getCurrentAdmin();
+  const adminName = currentAdmin?.name || 'Unknown Admin';
+  if (sidebarName) sidebarName.textContent = adminName;
+  if (sidebarAvatar) sidebarAvatar.textContent = adminName.charAt(0).toUpperCase();
+}
+
+function getAdminLogs() {
+  try {
+    const saved = localStorage.getItem(adminLogsStorageKey);
+    return saved ? JSON.parse(saved) : [];
+  } catch (err) {
+    console.error('Failed to load admin logs:', err);
+    return [];
+  }
+}
+
+function escapeActivityLogText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatActivityLogDetails(log) {
+  const details = log.details || 'No details available.';
+  if (typeof details !== 'string' || !details.trim().startsWith('{')) return details;
+
+  try {
+    const parsed = JSON.parse(details);
+    const bookings = Array.isArray(parsed.bookings) ? parsed.bookings : [];
+    const affectedBookings = bookings.slice(0, 2).map(booking => {
+      const date = booking.booking_date || 'No date';
+      const time = booking.booking_time || booking.time_slot || 'No time';
+      const court = booking.court || booking.court_name || 'No court';
+      return `${date} • ${time} • ${court}`;
+    });
+    const moreCount = bookings.length > 2 ? ` +${bookings.length - 2} more` : '';
+    const summary = parsed.summary || 'Activity recorded.';
+    return affectedBookings.length
+      ? `${summary} ${affectedBookings.join(' | ')}${moreCount}`
+      : summary;
+  } catch (err) {
+    return details;
+  }
+}
+
+function getActivityLogBookings(log) {
+  if (!log) return [];
+  if (Array.isArray(log.bookings)) return log.bookings;
+
+  try {
+    const parsed = typeof log.details === 'string' ? JSON.parse(log.details) : log.details;
+    return Array.isArray(parsed?.bookings) ? parsed.bookings : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function getActivityLogActor(log) {
+  if (log?.actor_name || log?.admin_name) return log.actor_name || log.admin_name;
+  const details = typeof log?.details === 'string' ? log.details : '';
+  const match = details.match(/Action by ([^.]+)\./i);
+  return match ? match[1].trim() : 'Unknown Admin';
+}
+
+function toggleActivityLogDetails(index) {
+  const details = document.getElementById(`activityLogDetails-${index}`);
+  const button = document.querySelector(`[aria-controls="activityLogDetails-${index}"]`);
+  if (!details || !button) return;
+
+  const isOpen = details.classList.toggle('open');
+  button.textContent = isOpen ? 'Hide details' : 'View details';
+  button.setAttribute('aria-expanded', String(isOpen));
+}
+
+function renderActivityLogBookingDetails(log, index) {
+  const bookings = getActivityLogBookings(log);
+  if (!bookings.length) {
+    return '<div class="activity-log-detail-empty">No booking details available.</div>';
+  }
+
+  return bookings.map((booking, bookingIndex) => `
+    <div class="activity-log-booking-detail">
+      <span class="activity-log-booking-number">Booking ${bookingIndex + 1}</span>
+      ${booking.action ? `
+        <dl>
+          <div><dt>Date</dt><dd>${escapeActivityLogText(booking.booking_date || 'N/A')}</dd></div>
+          <div><dt>Court Name</dt><dd>${escapeActivityLogText(booking.court || booking.court_name || 'N/A')}</dd></div>
+          <div><dt>Time Slot</dt><dd>${escapeActivityLogText(booking.booking_time || booking.time_slot || 'N/A')}</dd></div>
+          <div><dt>Status</dt><dd class="activity-log-status-${booking.action === 'blocked' ? 'blocked' : 'unblocked'}">${escapeActivityLogText(booking.action)}</dd></div>
+        </dl>
+      ` : `
+        <dl>
+          <div><dt>Name</dt><dd>${escapeActivityLogText(booking.customer_name || booking.name || 'N/A')}</dd></div>
+          <div><dt>Court Name</dt><dd>${escapeActivityLogText(booking.court || booking.court_name || 'N/A')}</dd></div>
+          <div><dt>Number</dt><dd>${escapeActivityLogText(booking.phone_number || booking.phone || 'N/A')}</dd></div>
+          <div><dt>Time Slot</dt><dd>${escapeActivityLogText(booking.booking_time || booking.time_slot || 'N/A')}</dd></div>
+        </dl>
+      `}
+    </div>
+  `).join('');
+}
+
+async function loadActivityLogs() {
+  const list = document.getElementById('activityLogList');
+  const status = document.getElementById('activityLogsStatus');
+  if (!list) return;
+
+  list.innerHTML = '<div class="activity-log-empty">Loading activity logs...</div>';
+
+  let logs = getAdminLogs();
+  if (supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('admin_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (!error && Array.isArray(data)) logs = data;
+    } catch (err) {
+      console.warn('Could not load activity logs from Supabase:', err);
+    }
+  }
+
+  activityLogs = logs;
+  activityLogsPage = 1;
+  renderActivityLogs();
+  if (status) status.textContent = `${logs.length} log${logs.length === 1 ? '' : 's'}`;
+}
+
+function renderActivityLogs() {
+  const list = document.getElementById('activityLogList');
+  const pagination = document.getElementById('activityLogsPagination');
+  if (!list || !pagination) return;
+
+  if (!activityLogs.length) {
+    list.innerHTML = '<div class="activity-log-empty">No activity logs yet.</div>';
+    pagination.innerHTML = '';
+    return;
+  }
+
+  const totalPages = Math.ceil(activityLogs.length / activityLogsPerPage);
+  activityLogsPage = Math.min(Math.max(activityLogsPage, 1), totalPages);
+  const start = (activityLogsPage - 1) * activityLogsPerPage;
+  const visibleLogs = activityLogs.slice(start, start + activityLogsPerPage);
+
+  list.innerHTML = visibleLogs.map((log, visibleIndex) => {
+    const logIndex = start + visibleIndex;
+    const createdAtValue = log.created_at || log.createdAt;
+    const createdAt = createdAtValue ? new Date(createdAtValue).toLocaleString() : 'Unknown date';
+    const type = String(log.type || 'info').toLowerCase();
+    const badgeClass = ['deleted', 'expired', 'blocked', 'confirmed'].includes(type) ? type : 'info';
+    return `
+      <article class="activity-log-item">
+        <span class="activity-log-badge ${badgeClass}">${escapeActivityLogText(type)}</span>
+        <div>
+          <h4>${escapeActivityLogText(log.title || 'Admin action')}</h4>
+          <div class="activity-log-actor"><span>Action by:</span> ${escapeActivityLogText(getActivityLogActor(log))}</div>
+          <p>${escapeActivityLogText(formatActivityLogDetails(log))}</p>
+          <button class="activity-log-details-toggle" type="button" aria-controls="activityLogDetails-${logIndex}" aria-expanded="false" onclick="toggleActivityLogDetails(${logIndex})">View details</button>
+          <div class="activity-log-details" id="activityLogDetails-${logIndex}">
+            ${renderActivityLogBookingDetails(log, logIndex)}
+          </div>
+        </div>
+        <time class="activity-log-time">${escapeActivityLogText(createdAt)}</time>
+      </article>
+    `;
+  }).join('');
+
+  pagination.innerHTML = `
+    <button class="btn-secondary" type="button" onclick="changeActivityLogsPage(-1)" ${activityLogsPage === 1 ? 'disabled' : ''}>Previous</button>
+    <span class="modal-subtitle">Page ${activityLogsPage} of ${totalPages}</span>
+    <button class="btn-secondary" type="button" onclick="changeActivityLogsPage(1)" ${activityLogsPage === totalPages ? 'disabled' : ''}>Next</button>
+  `;
+}
+
+function changeActivityLogsPage(step) {
+  const totalPages = Math.ceil(activityLogs.length / activityLogsPerPage);
+  const nextPage = activityLogsPage + step;
+  if (nextPage < 1 || nextPage > totalPages) return;
+  activityLogsPage = nextPage;
+  renderActivityLogs();
+}
+
+function openActivityLogsModal() {
+  const modal = document.getElementById('activityLogsModal');
+  if (!modal) return;
+  modal.classList.add('open');
+  loadActivityLogs();
+}
+
+function closeActivityLogsModal() {
+  const modal = document.getElementById('activityLogsModal');
+  if (modal) modal.classList.remove('open');
+}
+
+async function requestPendingNotificationPermission() {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    try {
+      await Notification.requestPermission();
+    } catch (err) {
+      console.warn('Notification permission request failed', err);
+    }
+  }
+}
+
+async function registerPendingBookingNotifications() {
+  if (typeof window === 'undefined') return;
+
+  if ('serviceWorker' in navigator) {
+    try {
+      await navigator.serviceWorker.register('service-worker.js');
+      const registration = await navigator.serviceWorker.ready;
+      
+      if ('periodicSync' in registration) {
+        try {
+          await registration.periodicSync.register('check-pending-bookings', {
+            minInterval: 5 * 60 * 1000
+          });
+        } catch (err) {
+          if (err && !['NotAllowedError', 'UnknownError'].includes(err.name)) {
+            console.warn('Periodic sync registration failed', err);
+          }
+        }
+      }
+      
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (event) => {
+          if (event.data && event.data.type === 'PENDING_BOOKING_CHECK') {
+            trackPendingBookingNotifications(event.data.bookings);
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('Service worker registration failed', err);
+    }
+  }
+
+  await requestPendingNotificationPermission();
+  
+  if ('wakeLock' in navigator && !document.hidden) {
+    try {
+      await navigator.wakeLock.request('screen');
+    } catch (err) {
+      if (err?.name !== 'NotAllowedError') {
+        console.warn('Wake lock request failed', err);
+      }
+    }
+  }
+}
+
+async function notifyPendingBookingOnDevice(title, body, count = 1) {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+
+  if (Notification.permission !== 'granted') {
+    const permission = await requestPendingNotificationPermission();
+    if (permission !== 'granted' && Notification.permission !== 'granted') return;
+  }
+
+  try {
+    if ('serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.showNotification(title, {
+        body,
+        icon: 'logo.jpeg',
+        badge: 'logo.jpeg',
+        tag: 'pending-booking',
+        renotify: true,
+        requireInteraction: false
+      });
+
+      if (typeof navigator.setAppBadge === 'function') {
+        try {
+          await navigator.setAppBadge(count);
+        } catch (err) {
+          console.warn('App badge update failed', err);
+        }
+      }
+      return;
+    }
+
+    new Notification(title, { body, icon: 'logo.jpeg' });
+  } catch (err) {
+    console.warn('Unable to send device notification', err);
+  }
+}
+
+function playPendingBookingSound() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    if (!pendingAlertAudioContext) {
+      pendingAlertAudioContext = new AudioContextClass();
+    }
+
+    const ctx = pendingAlertAudioContext;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    if (navigator.vibrate) {
+      navigator.vibrate([180, 90, 180]);
+    }
+
+    const now = ctx.currentTime;
+    const oscillator1 = ctx.createOscillator();
+    const oscillator2 = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    oscillator1.type = 'triangle';
+    oscillator1.frequency.setValueAtTime(1040, now);
+    oscillator1.frequency.exponentialRampToValueAtTime(1480, now + 0.14);
+
+    oscillator2.type = 'square';
+    oscillator2.frequency.setValueAtTime(1560, now + 0.05);
+    oscillator2.frequency.exponentialRampToValueAtTime(1880, now + 0.16);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.3, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+
+    oscillator1.connect(gain);
+    oscillator2.connect(gain);
+    gain.connect(ctx.destination);
+
+    oscillator1.start(now);
+    oscillator2.start(now);
+    oscillator1.stop(now + 0.34);
+    oscillator2.stop(now + 0.34);
+  } catch (err) {
+    console.warn('Unable to play pending booking sound', err);
+  }
+}
+
+function showPendingBookingAlert(newPendingBookings = []) {
+  if (!newPendingBookings.length) return;
+
+  const latest = newPendingBookings[0] || {};
+  const customerName = latest.customer_name || 'A customer';
+  const phone = formatPhone(latest.phone_number || latest.phone || 'N/A');
+  const bookingDate = latest.booking_date || 'soon';
+  const bookingTime = latest.time_slot || latest.booking_time || '';
+  const summary = newPendingBookings.length === 1
+    ? `${customerName} • ${phone} • ${bookingDate}${bookingTime ? ` • ${bookingTime}` : ''}`
+    : `${newPendingBookings.length} new pending bookings. Latest: ${customerName} • ${phone}`;
+
+  const alertBox = document.getElementById('pendingBookingAlert');
+  const alertMessage = document.getElementById('pendingBookingAlertMessage');
+
+  if (alertBox && alertMessage) {
+    alertMessage.textContent = summary;
+    alertBox.classList.add('show');
+    clearTimeout(showPendingBookingAlert.hideTimer);
+    showPendingBookingAlert.hideTimer = setTimeout(() => {
+      alertBox.classList.remove('show');
+    }, 6000);
+  }
+
+  showToast(`New pending booking: ${customerName} • ${phone}`);
+  playPendingBookingSound();
+
+  const notificationBody = `${customerName} • ${phone} • ${bookingDate} • Check it now!`;
+  notifyPendingBookingOnDevice('New Pending Booking', notificationBody, newPendingBookings.length);
+
+  const originalTitle = document.title;
+  document.title = 'New Pending Booking • Admin Dashboard';
+  setTimeout(() => {
+    document.title = originalTitle;
+  }, 6000);
+}
+
+showPendingBookingAlert.hideTimer = null;
+
+function scrollToPendingBookings(event) {
+  if (event) event.stopPropagation();
+  const bookingsSection = document.querySelector('.bookings-section');
+  if (bookingsSection) {
+    bookingsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function trackPendingBookingNotifications(bookings = []) {
+  const pendingBookings = (bookings || []).filter(booking => (booking.status || '').toLowerCase() === 'pending');
+  const currentIds = new Set(pendingBookings.map(booking => booking.id));
+
+  if (!pendingNotificationState.hasInitialized) {
+    pendingNotificationState.knownPendingIds = currentIds;
+    pendingNotificationState.hasInitialized = true;
+    return;
+  }
+
+  const newPendingBookings = pendingBookings.filter(booking => !pendingNotificationState.knownPendingIds.has(booking.id));
+  pendingNotificationState.knownPendingIds = currentIds;
+
+  const now = Date.now();
+  if (newPendingBookings.length && now - pendingNotificationState.lastAlertAt >= pendingNotificationState.cooldownMs) {
+    pendingNotificationState.lastAlertAt = now;
+    showPendingBookingAlert(newPendingBookings);
+  }
+}
+
+function saveAdminLogs(logs) {
+  try {
+    localStorage.setItem(adminLogsStorageKey, JSON.stringify(logs));
+  } catch (err) {
+    console.error('Failed to save admin logs:', err);
+  }
+}
+
+function buildBookingLogDetails(booking = {}) {
+  const parts = [];
+  if (booking.reference_code) parts.push(`Reference: ${booking.reference_code}`);
+  if (booking.customer_name) parts.push(`Customer: ${booking.customer_name}`);
+  if (booking.booking_date) parts.push(`Booking Date: ${booking.booking_date}`);
+  if (booking.booking_time || booking.time_slot) parts.push(`Booking Time: ${booking.booking_time || booking.time_slot}`);
+  if (booking.court || booking.court_name) parts.push(`Court: ${booking.court || booking.court_name}`);
+  if (booking.price || booking.rate) parts.push(`Amount: ₱${Number(booking.price || booking.rate || 0).toLocaleString()}`);
+  return parts.length ? parts.join(' • ') : 'No booking details available.';
+}
+
+async function saveAdminLogToSupabase(entry) {
+  if (!supabaseClient) return false;
+
+  const payload = {
+    type: entry.type,
+    title: entry.title,
+    details: entry.details,
+    reference_code: entry.reference_code || null,
+    customer_name: entry.customer_name || null,
+    booking_id: entry.bookingId || entry.booking_id || null,
+    actor_name: entry.actor_name || null,
+    created_at: entry.createdAt
+  };
+
+  const { error } = await supabaseClient.from('admin_logs').insert(payload);
+  if (error) {
+    console.error('Failed to save admin log to Supabase:', error);
+    return false;
+  }
+
+  return true;
+}
+
+async function addAdminLog(type, title, details, payload = {}) {
+  const currentAdmin = getCurrentAdmin();
+  const actorName = currentAdmin?.name || 'Unknown Admin';
+  const actorPrefix = `Action by ${actorName}. `;
+
+  let serializedDetails = `${actorPrefix}${details}`;
+  if (payload.bookings && Array.isArray(payload.bookings)) {
+    serializedDetails = JSON.stringify({
+      summary: `${actorPrefix}${details}`,
+      bookings: payload.bookings
+    });
+  }
+
+  const entry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    title,
+    details: serializedDetails,
+    createdAt: new Date().toISOString(),
+    actor_name: actorName,
+    ...payload
+  };
+
+  const logs = [entry, ...getAdminLogs()].slice(0, 200);
+  saveAdminLogs(logs);
+  await saveAdminLogToSupabase(entry);
+  return entry;
+}
 
 function getBookingGroupKey(booking) {
   if (booking.reference_code) return booking.reference_code;
@@ -109,9 +652,9 @@ function parseSlotStartDateTime(bookingDate, timeSlot) {
 
 // Check authentication
 function checkAuthentication() {
-  const token = sessionStorage.getItem('adminToken');
-  if (!token) {
-    // Not logged in, redirect to login
+  const token = sessionStorage.getItem('adminToken') || localStorage.getItem('adminToken');
+  const profile = sessionStorage.getItem('adminProfile') || localStorage.getItem('adminProfile');
+  if (!token || !profile) {
     window.location.href = 'index.html';
     return false;
   }
@@ -126,8 +669,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   // Initialize Supabase
   const supabaseConfig = window.SUPABASE_CONFIG || {};
-  const SUPABASE_URL = supabaseConfig.url || "https://nozisfmqzkeywefrqkok.supabase.co";
-  const SUPABASE_ANON_KEY = supabaseConfig.anonKey || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vemlzZm1xemtleXdlZnJxa29rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1NzY2NzcsImV4cCI6MjA5NDE1MjY3N30.9CyqA4zZ9o5glyVl40Baah9ce-mqPIB3fAi2wp2-Ppk";
+  const SUPABASE_URL = supabaseConfig.url || "https://mpkmtcdsubopnrpyqwel.supabase.co";
+  const SUPABASE_ANON_KEY = supabaseConfig.anonKey || "sb_publishable_UL5Bm_SqkJTmRSmcO_NdRA_1qoOksRk";
 
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     showToast('Supabase configuration missing. Please set window.SUPABASE_CONFIG.');
@@ -135,6 +678,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   try {
+    updateAdminProfileBadge();
+    await registerPendingBookingNotifications();
     supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     
     // Test connection
@@ -159,13 +704,60 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadBookings();
     updateEarnings();
 
-    setInterval(async () => {
-      if (!supabaseClient || allBookings.length === 0) return;
-      const expiredUpdated = await updateExpiredBookings(allBookings);
-      if (expiredUpdated) {
-        await loadBookings();
+    const refreshPendingBookings = async () => {
+      if (!supabaseClient) return;
+
+      try {
+        const { data, error } = await supabaseClient
+          .from('bookings')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        const bookingsData = data || [];
+        trackPendingBookingNotifications(bookingsData);
+
+        const previousSnapshot = JSON.stringify(allBookings);
+        const nextSnapshot = JSON.stringify(bookingsData);
+        if (previousSnapshot !== nextSnapshot) {
+          allBookings = bookingsData;
+          applyFilters();
+          refreshCalendarView();
+        }
+      } catch (err) {
+        console.error('Background booking refresh failed:', err);
       }
-    }, 15000);
+    };
+
+    // Prevent PWA from being suspended when backgrounded
+    if ('wakeLock' in navigator) {
+      document.addEventListener('visibilitychange', async () => {
+        if (!document.hidden && 'wakeLock' in navigator) {
+          try {
+            await navigator.wakeLock.request('screen');
+          } catch (err) {
+            if (err?.name !== 'NotAllowedError') {
+              console.warn('Wake lock renewal failed', err);
+            }
+          }
+        }
+      });
+    }
+
+    // Instant refresh when PWA comes back to foreground
+    window.addEventListener('focus', () => {
+      refreshPendingBookings();
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        refreshPendingBookings();
+      }
+    });
+
+    // Aggressive polling every 2 seconds
+    setInterval(refreshPendingBookings, 2000);
   } catch (err) {
     console.error('Initialization error:', err);
     showToast('Failed to connect to database');
@@ -192,17 +784,17 @@ async function loadBookings() {
 
     if (error) throw error;
 
-    allBookings = data || [];
-    selectedBookingIds.clear();
-    console.log('Loaded bookings:', allBookings);
-    
-    // Check and update expired bookings
-    const expiredUpdated = await updateExpiredBookings(allBookings);
+    const bookingsData = data || [];
+    const expiredUpdated = await updateExpiredBookings(bookingsData);
     if (expiredUpdated) {
       await loadBookings();
       return;
     }
-    
+
+    allBookings = bookingsData;
+    selectedBookingIds.clear();
+    trackPendingBookingNotifications(bookingsData);
+
     applyFilters();
     refreshCalendarView();
   } catch (err) {
@@ -264,6 +856,7 @@ async function updateExpiredBookings(bookings) {
         console.error('Error updating expired bookings:', error);
       } else {
         console.log(`Updated ${expiredIds.length} bookings to expired status`);
+        // Expired bookings are only shown on dashboard, not logged
         return true;
       }
     }
@@ -319,9 +912,118 @@ function applyFilters() {
 
   currentPage = 1;
   groupedBookings = groupBookings(filteredBookings);
+  renderAdminLeaderboard();
   renderTable();
   updatePagination();
   updateEarnings();
+}
+
+function toggleLeaderboardCollapse() {
+  const section = document.getElementById('adminLeaderboardSection');
+  const button = document.getElementById('leaderboardToggleBtn');
+
+  if (!section || !button) return;
+
+  const isCollapsed = section.classList.toggle('collapsed');
+  button.textContent = isCollapsed ? 'Show leaderboard' : 'Hide leaderboard';
+  button.setAttribute('aria-expanded', String(!isCollapsed));
+}
+
+function setLeaderboardMode(mode) {
+  leaderboardMode = mode === 'total' ? 'total' : 'monthly';
+  const copy = document.getElementById('leaderboardModeCopy');
+  const buttons = document.querySelectorAll('.leaderboard-filter-btn');
+
+  buttons.forEach(button => {
+    const isActive = button.dataset.leaderboardMode === leaderboardMode;
+    button.classList.toggle('active', isActive);
+  });
+
+  if (copy) {
+    copy.textContent = leaderboardMode === 'total'
+      ? 'Top 6 admins overall by confirmed bookings.'
+      : 'Top 6 admins this month by confirmed bookings.';
+  }
+
+  renderAdminLeaderboard();
+}
+
+function renderAdminLeaderboard() {
+  const leaderboardList = document.getElementById('adminLeaderboardList');
+  if (!leaderboardList) return;
+
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+
+  const filteredBookings = (allBookings || []).filter(booking => {
+    const confirmedAt = booking.confirmed_at || booking.confirmedAt;
+    if (!confirmedAt) return false;
+
+    const confirmedDate = new Date(confirmedAt);
+    if (Number.isNaN(confirmedDate.getTime())) return false;
+
+    if (leaderboardMode === 'monthly') {
+      return confirmedDate.getMonth() === currentMonth && confirmedDate.getFullYear() === currentYear;
+    }
+
+    return true;
+  });
+
+  const leaderboardEntries = filteredBookings
+    .map(booking => booking.confirmed_by || booking.confirmedBy)
+    .filter(Boolean)
+    .reduce((acc, adminName) => {
+      const key = String(adminName).trim();
+      if (!key) return acc;
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+  const rankedAdmins = Object.entries(leaderboardEntries)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, 6);
+
+  leaderboardList.innerHTML = '';
+
+  if (!rankedAdmins.length) {
+    const emptyState = document.createElement('div');
+    emptyState.className = 'leaderboard-empty';
+    emptyState.textContent = leaderboardMode === 'total'
+      ? 'No confirmed bookings yet for the leaderboard.'
+      : 'Leaderboard will light up once bookings start getting confirmed this month.';
+    leaderboardList.appendChild(emptyState);
+    return;
+  }
+
+  const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣'];
+
+  rankedAdmins.forEach((admin, index) => {
+    const item = document.createElement('div');
+    item.className = `leaderboard-item rank-${index + 1}`;
+
+    const rank = document.createElement('div');
+    rank.className = 'leaderboard-rank';
+    rank.textContent = medals[index] || `${index + 1}`;
+
+    const body = document.createElement('div');
+    body.className = 'leaderboard-body';
+
+    const name = document.createElement('div');
+    name.className = 'leaderboard-name';
+    name.textContent = admin.name;
+
+    const count = document.createElement('div');
+    count.className = 'leaderboard-count';
+    count.textContent = `${admin.count} confirmed${leaderboardMode === 'monthly' ? ' this month' : ''}`;
+
+    body.appendChild(name);
+    body.appendChild(count);
+    item.appendChild(rank);
+    item.appendChild(body);
+    leaderboardList.appendChild(item);
+  });
 }
 
 // Render table with pagination
@@ -366,6 +1068,12 @@ function renderTable() {
     statusBadge.textContent = group.status || 'pending';
     statusCell.appendChild(statusBadge);
 
+    const confirmedByCell = document.createElement('td');
+    const confirmedValues = [...new Set((group.bookings || [])
+      .map(booking => booking.confirmed_by || booking.confirmedBy)
+      .filter(Boolean))];
+    confirmedByCell.textContent = confirmedValues.length ? confirmedValues.join(', ') : '—';
+
     const actionCell = document.createElement('td');
     actionCell.className = 'action-buttons';
 
@@ -380,7 +1088,7 @@ function renderTable() {
     copyBtn.onclick = () => copyToClipboard(group.reference_code);
 
     const detailsBtn = document.createElement('button');
-    detailsBtn.className = 'action-btn';
+    detailsBtn.className = 'action-btn details-btn';
     detailsBtn.textContent = 'Details';
     detailsBtn.onclick = () => openBookingDetails(group);
 
@@ -417,12 +1125,369 @@ function renderTable() {
     row.appendChild(timeCell);
     row.appendChild(amountCell);
     row.appendChild(statusCell);
+    row.appendChild(confirmedByCell);
     row.appendChild(actionCell);
 
     tbody.appendChild(row);
   });
 
   updateBulkActions();
+}
+
+function getNextBookingSlot(booking) {
+  const date = booking.booking_date || booking.date;
+  const time = booking.time_slot || booking.booking_time;
+  const startMinutes = getSlotStartMinutes(time);
+  if (!date || !Number.isFinite(startMinutes) || startMinutes >= 24 * 60) return null;
+
+  const nextStartMinutes = startMinutes + 60;
+  const nextEndMinutes = nextStartMinutes + 60;
+  const formatTime = minutes => {
+    const normalizedMinutes = minutes % (24 * 60);
+    const hours = Math.floor(normalizedMinutes / 60);
+    const minute = String(normalizedMinutes % 60).padStart(2, '0');
+    const suffix = hours < 12 ? 'AM' : 'PM';
+    const displayHour = hours % 12 || 12;
+    return minute === '00' ? `${displayHour}${suffix}` : `${displayHour}:${minute}${suffix}`;
+  };
+
+  const nextDate = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(nextDate.getTime())) return null;
+  if (nextStartMinutes >= 24 * 60) nextDate.setDate(nextDate.getDate() + 1);
+
+  return {
+    date: formatDateKey(nextDate),
+    court: booking.court || booking.court_name || 'Court One',
+    timeSlot: `${formatTime(nextStartMinutes)} - ${formatTime(nextEndMinutes)}`
+  };
+}
+
+let extendBookingGroups = [];
+
+function openExtendBookingModal() {
+  const modal = document.getElementById('extendBookingModal');
+  const customerSelect = document.getElementById('extendBookingCustomer');
+  const customerPicker = document.getElementById('extendCustomerPicker');
+  if (!modal || !customerSelect || !customerPicker) return;
+
+  const todayKey = formatDateKey(new Date());
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayKey = formatDateKey(yesterday);
+  extendBookingGroups = groupBookings(allBookings).filter(group => {
+    const activeBookings = group.bookings.filter(booking =>
+      !['cancelled', 'expired'].includes(String(booking.status || '').toLowerCase())
+    );
+    if (!activeBookings.length) return false;
+
+    const latestBooking = [...activeBookings]
+      .sort((a, b) => getSlotStartMinutes(a.time_slot || a.booking_time) - getSlotStartMinutes(b.time_slot || b.booking_time))
+      .at(-1);
+    const nextSlot = getNextBookingSlot(latestBooking);
+    const hasYesterdayBooking = activeBookings.some(booking =>
+      (booking.booking_date || booking.date || '') === yesterdayKey
+    );
+    return (nextSlot && nextSlot.date >= todayKey) || hasYesterdayBooking;
+  });
+  customerSelect.innerHTML = '';
+  customerPicker.innerHTML = '';
+
+  if (!extendBookingGroups.length) {
+    customerSelect.innerHTML = '<option value="">No active bookings found</option>';
+    customerPicker.innerHTML = '<div class="empty-list">No active bookings found.</div>';
+    modal.classList.add('open');
+    return;
+  }
+
+  extendBookingGroups.forEach((group, index) => {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = `${group.customer_name} · ${group.reference_code}`;
+    customerSelect.appendChild(option);
+
+    const customerButton = document.createElement('button');
+    customerButton.type = 'button';
+    customerButton.className = 'customer-picker-row';
+    customerButton.setAttribute('role', 'option');
+    customerButton.innerHTML = `<span class="customer-picker-name">${group.customer_name}</span><span class="customer-picker-reference">${group.reference_code}</span>`;
+    customerButton.onclick = () => {
+      customerSelect.value = String(index);
+      customerPicker.querySelectorAll('.customer-picker-row').forEach(row => row.classList.remove('selected'));
+      customerButton.classList.add('selected');
+      updateExtendBookingFields(true);
+    };
+    customerPicker.appendChild(customerButton);
+  });
+
+  modal.classList.add('open');
+  updateExtendBookingFields(true);
+  customerPicker.querySelector('.customer-picker-row')?.classList.add('selected');
+}
+
+async function updateExtendBookingFields(resetDate = false) {
+  const customerSelect = document.getElementById('extendBookingCustomer');
+  const dateInput = document.getElementById('extendBookingDate');
+  const courtSelect = document.getElementById('extendBookingCourt');
+  const timeSelect = document.getElementById('extendBookingTime');
+  const timePicker = document.getElementById('extendTimeSlotPicker');
+  const customerPicker = document.getElementById('extendCustomerPicker');
+  const group = extendBookingGroups[Number(customerSelect?.value)];
+  if (!group || !dateInput || !courtSelect || !timeSelect || !timePicker) return;
+
+  const source = [...group.bookings]
+    .filter(booking => !['cancelled', 'expired'].includes(String(booking.status || '').toLowerCase()))
+    .sort((a, b) => getSlotStartMinutes(a.time_slot || a.booking_time) - getSlotStartMinutes(b.time_slot || b.booking_time))
+    .at(-1) || group.bookings[0];
+  const nextSlot = getNextBookingSlot(source);
+  const defaultDate = nextSlot?.date || source.booking_date || source.date || formatDateKey(new Date());
+  if (resetDate || !dateInput.value) dateInput.value = defaultDate;
+
+  const currentCourt = courtSelect.value;
+  const courts = [...new Set(group.bookings.map(booking => booking.court || booking.court_name || 'Court One'))];
+  courtSelect.innerHTML = courts.map(court => `<option value="${court}">${court}</option>`).join('');
+  if (courts.includes(currentCourt)) {
+    courtSelect.value = currentCourt;
+  } else if (source.court || source.court_name) {
+    courtSelect.value = source.court || source.court_name;
+  }
+
+  const { data: blockedSlots, error: blockedError } = await supabaseClient
+    .from('blocked_time_slots')
+    .select('court, time_slot')
+    .eq('blocked_date', dateInput.value);
+  if (blockedError) {
+    console.error('Failed to load extension slot statuses:', blockedError);
+  }
+
+  const blockedTimes = new Set((blockedSlots || [])
+    .filter(slot => normalizeCourtName(slot.court) === normalizeCourtName(courtSelect.value))
+    .map(slot => getSlotStartMinutes(slot.time_slot)));
+  const groupIds = new Set(group.bookings.map(booking => booking.id));
+  const selectedDate = dateInput.value;
+  const selectedCourt = courtSelect.value;
+  const normalizedCourt = normalizeCourtName(selectedCourt);
+  timeSelect.innerHTML = '';
+  timePicker.innerHTML = '';
+  for (let hour = 0; hour < 24; hour++) {
+    const option = document.createElement('option');
+    const formatTime = minutes => {
+      const normalizedMinutes = minutes % (24 * 60);
+      const hours = Math.floor(normalizedMinutes / 60);
+      const minute = String(normalizedMinutes % 60).padStart(2, '0');
+      const suffix = hours < 12 ? 'AM' : 'PM';
+      const displayHour = hours % 12 || 12;
+      return minute === '00' ? `${displayHour}${suffix}` : `${displayHour}:${minute}${suffix}`;
+    };
+    const timeSlot = `${formatTime(hour * 60)} - ${formatTime((hour + 1) * 60)}`;
+    const timeValue = getSlotStartMinutes(timeSlot);
+    const matchingBookings = allBookings.filter(booking => {
+      const status = String(booking.status || '').toLowerCase();
+      return !groupIds.has(booking.id) &&
+        !['cancelled', 'expired'].includes(status) &&
+        (booking.booking_date || booking.date) === selectedDate &&
+        normalizeCourtName(booking.court || booking.court_name || 'Court One') === normalizedCourt &&
+        getSlotStartMinutes(booking.time_slot || booking.booking_time) === timeValue;
+    });
+    const alreadyAdded = group.bookings.some(booking =>
+      (booking.booking_date || booking.date) === selectedDate &&
+      normalizeCourtName(booking.court || booking.court_name || 'Court One') === normalizedCourt &&
+      getSlotStartMinutes(booking.time_slot || booking.booking_time) === timeValue
+    );
+    const status = blockedTimes.has(timeValue)
+      ? 'Blocked'
+      : alreadyAdded
+        ? 'Already added'
+        : matchingBookings.some(booking => String(booking.status || '').toLowerCase() === 'pending')
+          ? 'Pending'
+          : matchingBookings.length
+            ? 'Booked'
+            : 'Available';
+
+    option.value = timeSlot;
+    option.textContent = `${timeSlot} · ${status}`;
+    option.className = `slot-option slot-option-${status.toLowerCase().replace(/\s+/g, '-')}`;
+    option.disabled = status !== 'Available';
+    timeSelect.appendChild(option);
+
+    const slotButton = document.createElement('button');
+    slotButton.type = 'button';
+    slotButton.className = `slot-picker-row ${status.toLowerCase().replace(/\s+/g, '-')}`;
+    slotButton.setAttribute('role', 'option');
+    slotButton.setAttribute('aria-label', `${timeSlot}, ${status}`);
+    slotButton.disabled = option.disabled;
+    slotButton.innerHTML = `<span class="slot-picker-time">${timeSlot}</span><span class="slot-picker-status">${status}</span><span class="slot-picker-check">${status === 'Available' ? '○' : '—'}</span>`;
+    slotButton.onclick = () => {
+      timeSelect.value = timeSlot;
+      updateExtendSelectedSlotStatus();
+      timePicker.querySelectorAll('.slot-picker-row').forEach(row => row.classList.remove('selected'));
+      slotButton.classList.add('selected');
+    };
+    timePicker.appendChild(slotButton);
+  }
+  const defaultOption = nextSlot && [...timeSelect.options].find(option => option.value === nextSlot.timeSlot);
+  if (defaultOption && !defaultOption.disabled) {
+    timeSelect.value = nextSlot.timeSlot;
+  }
+  updateExtendSelectedSlotStatus();
+  const selectedRow = [...timePicker.querySelectorAll('.slot-picker-row')].find(row => row.querySelector('.slot-picker-time')?.textContent === timeSelect.value);
+  selectedRow?.classList.add('selected');
+  customerPicker?.querySelectorAll('.customer-picker-row').forEach((row, index) => {
+    row.classList.toggle('selected', index === Number(customerSelect.value));
+  });
+}
+
+function updateExtendSelectedSlotStatus() {
+  const timeSelect = document.getElementById('extendBookingTime');
+  const statusDisplay = document.getElementById('extendSelectedSlotStatus');
+  if (!timeSelect || !statusDisplay) return;
+
+  const selectedOption = timeSelect.selectedOptions[0];
+  if (!selectedOption) {
+    statusDisplay.textContent = '';
+    statusDisplay.className = 'selected-slot-status';
+    return;
+  }
+
+  const statusMatch = selectedOption.textContent.match(/·\s*(Available|Booked|Pending|Blocked|Already added)$/);
+  const status = statusMatch ? statusMatch[1] : 'Available';
+  statusDisplay.textContent = `${selectedOption.value} · ${status}`;
+  statusDisplay.className = `selected-slot-status ${status.toLowerCase().replace(/\s+/g, '-')}`;
+
+  document.querySelectorAll('#extendTimeSlotPicker .slot-picker-row').forEach(row => {
+    row.classList.toggle('selected', row.querySelector('.slot-picker-time')?.textContent === selectedOption.value);
+  });
+}
+
+function closeExtendBookingModal() {
+  document.getElementById('extendBookingModal')?.classList.remove('open');
+}
+
+async function submitExtendBooking() {
+  const customerSelect = document.getElementById('extendBookingCustomer');
+  const dateInput = document.getElementById('extendBookingDate');
+  const courtSelect = document.getElementById('extendBookingCourt');
+  const timeSelect = document.getElementById('extendBookingTime');
+  const group = extendBookingGroups[Number(customerSelect?.value)];
+  if (!group || !dateInput?.value || !courtSelect?.value || !timeSelect?.value) {
+    showToast('Select a customer, date, court, and time');
+    return;
+  }
+  if (timeSelect.selectedOptions[0]?.disabled) {
+    showToast('Select an available time slot');
+    return;
+  }
+
+  await extendBookingTime(group, {
+    date: dateInput.value,
+    court: courtSelect.value,
+    timeSlot: timeSelect.value
+  });
+}
+
+async function extendBookingTime(group, requestedSlot = null) {
+  if (!supabaseClient || !group?.bookings?.length) {
+    showToast('Database connection unavailable');
+    return;
+  }
+
+  const source = [...group.bookings]
+    .sort((a, b) => getSlotStartMinutes(a.time_slot || a.booking_time) - getSlotStartMinutes(b.time_slot || b.booking_time))
+    .at(-1);
+  const nextSlot = requestedSlot || getNextBookingSlot(source);
+  if (!nextSlot) {
+    showToast('This booking cannot be extended past 11:00 PM');
+    return;
+  }
+
+  const alreadyInGroup = group.bookings.some(booking =>
+    (booking.booking_date || booking.date) === nextSlot.date &&
+    (booking.court || booking.court_name || 'Court One') === nextSlot.court &&
+    getSlotStartMinutes(booking.time_slot || booking.booking_time) === getSlotStartMinutes(nextSlot.timeSlot)
+  );
+  if (alreadyInGroup) {
+    showToast('This booking already includes the next hour');
+    return;
+  }
+
+  const occupied = allBookings.some(booking => {
+    const status = String(booking.status || '').toLowerCase();
+    return booking.id !== source.id &&
+      !['cancelled', 'expired'].includes(status) &&
+      (booking.booking_date || booking.date) === nextSlot.date &&
+      String(booking.court || booking.court_name || 'Court One').trim().toLowerCase() === String(nextSlot.court).trim().toLowerCase() &&
+      getSlotStartMinutes(booking.time_slot || booking.booking_time) === getSlotStartMinutes(nextSlot.timeSlot);
+  });
+  if (occupied) {
+    showToast('The next hour is already booked');
+    return;
+  }
+
+  const { data: blockedSlots, error: blockedError } = await supabaseClient
+    .from('blocked_time_slots')
+    .select('court, time_slot')
+    .eq('blocked_date', nextSlot.date)
+    .eq('court', nextSlot.court);
+  if (blockedError) {
+    console.error('Failed to check blocked times:', blockedError);
+    showToast('Could not check the next timeslot');
+    return;
+  }
+  if ((blockedSlots || []).some(slot => getSlotStartMinutes(slot.time_slot) === getSlotStartMinutes(nextSlot.timeSlot))) {
+    showToast('The next hour is blocked');
+    return;
+  }
+
+  const { data: freshConflicts, error: freshConflictError } = await supabaseClient
+    .from('bookings')
+    .select('id, status, booking_date, court, court_name, time_slot, booking_time')
+    .eq('booking_date', nextSlot.date)
+    .in('status', ['pending', 'paid', 'confirmed', 'completed', 'unpaid'])
+    .or(`court.eq.${nextSlot.court},court_name.eq.${nextSlot.court}`);
+  if (freshConflictError) {
+    console.error('Failed to verify live booking availability:', freshConflictError);
+    showToast('Could not verify live slot availability');
+    return;
+  }
+
+  const liveSlotTaken = (freshConflicts || []).some(booking =>
+    String(booking.court || booking.court_name || '').trim().toLowerCase() === String(nextSlot.court).trim().toLowerCase() &&
+    getSlotStartMinutes(booking.time_slot || booking.booking_time) === getSlotStartMinutes(nextSlot.timeSlot)
+  );
+  if (liveSlotTaken) {
+    showToast('This slot was just booked. Refresh and choose another time.');
+    return;
+  }
+
+  const extensionRate = getBookingRateForDate(nextSlot.date, nextSlot.timeSlot);
+  const confirmed = confirm(`Extend ${source.customer_name || 'this booking'} to ${nextSlot.timeSlot}?\n\nAdditional rate: ₱${extensionRate.toLocaleString()}`);
+  if (!confirmed) return;
+
+  const payload = { ...source };
+  delete payload.id;
+  payload.booking_date = nextSlot.date;
+  payload.time_slot = nextSlot.timeSlot;
+  payload.booking_time = nextSlot.timeSlot;
+  payload.price = extensionRate;
+  payload.rate = payload.price;
+  payload.created_at = new Date().toISOString();
+
+  try {
+    const { error } = await supabaseClient.from('bookings').insert([payload]);
+    if (error) throw error;
+
+    await addAdminLog(
+      'booking_extended',
+      'Booking time extended',
+      `Added ${nextSlot.timeSlot} for ${source.customer_name || 'booking'} at ${nextSlot.court}.`,
+      { reference_code: source.reference_code, customer_name: source.customer_name, booking_date: nextSlot.date, booking_time: nextSlot.timeSlot }
+    );
+    closeExtendBookingModal();
+    showToast('Booking extended by 1 hour');
+    await loadBookings();
+  } catch (error) {
+    console.error('Failed to extend booking:', error);
+    showToast('Failed to extend booking');
+  }
 }
 
 function toggleGroupSelection(group) {
@@ -444,15 +1509,6 @@ function createCell(text) {
   return cell;
 }
 
-function toggleSelectAll(element) {
-  if (element.checked) {
-    groupedBookings.forEach(group => group.ids.forEach(id => selectedBookingIds.add(id)));
-  } else {
-    selectedBookingIds.clear();
-  }
-  renderTable();
-}
-
 function toggleRowSelection(bookingId) {
   if (selectedBookingIds.has(bookingId)) {
     selectedBookingIds.delete(bookingId);
@@ -468,7 +1524,6 @@ function updateBulkActions() {
   const count = selectedBookingIds.size;
   selectedCount.textContent = `${count} selected`;
   bulkBar.style.display = count > 0 ? 'flex' : 'none';
-  document.getElementById('selectAllCheckbox').checked = count > 0 && filteredBookings.every(b => selectedBookingIds.has(b.id));
 }
 
 function getSelectedBookings() {
@@ -616,6 +1671,32 @@ async function bulkDelete() {
     return;
   }
 
+  const selectedBookings = selected.filter(b => ids.includes(b.id));
+  const bookingPayload = selectedBookings.map(booking => ({
+    bookingId: booking.id,
+    reference_code: booking.reference_code,
+    customer_name: booking.customer_name,
+    booking_date: booking.booking_date,
+    booking_time: booking.booking_time || booking.time_slot,
+    court: booking.court || booking.court_name,
+    amount: booking.price || booking.rate
+  }));
+
+  await addAdminLog(
+    'deleted',
+    'Bulk bookings deleted',
+    `Deleted ${selectedBookings.length} selected booking slot(s).`,
+    {
+      bookingIds: ids,
+      bookings: bookingPayload,
+      reference_code: selectedBookings[0]?.reference_code || null,
+      customer_name: selectedBookings[0]?.customer_name || null,
+      booking_date: selectedBookings[0]?.booking_date || null,
+      booking_time: selectedBookings[0]?.booking_time || selectedBookings[0]?.time_slot || null,
+      court: selectedBookings[0]?.court || selectedBookings[0]?.court_name || null,
+      amount: selectedBookings[0]?.price || selectedBookings[0]?.rate || null
+    }
+  );
   showToast('Selected bookings deleted');
   selectedBookingIds.clear();
   await loadBookings();
@@ -791,12 +1872,16 @@ function getBookingTimeValue(timeValue) {
   return hours * 60 + minutes;
 }
 
+function getSlotStartMinutes(timeValue) {
+  return getBookingTimeValue(String(timeValue || '').split('-')[0].trim());
+}
+
 function getBookingsForDate(dateKey) {
   return allBookings
     .filter(booking => (booking.booking_date || booking.date || '').toString() === dateKey)
     .sort((a, b) => {
-      const timeA = getBookingTimeValue(a.time_slot || a.booking_time || '');
-      const timeB = getBookingTimeValue(b.time_slot || b.booking_time || '');
+      const timeA = getSlotStartMinutes(a.time_slot || a.booking_time || '');
+      const timeB = getSlotStartMinutes(b.time_slot || b.booking_time || '');
       return timeA - timeB;
     });
 }
@@ -809,16 +1894,15 @@ function refreshCalendarView() {
 }
 
 function getScheduleCourts() {
-  const courts = new Set();
-  allBookings.forEach(booking => {
-    const court = booking.court || booking.court_name || null;
-    if (court) courts.add(court);
-  });
-  if (courts.size === 0) {
-    courts.add('Court 1');
-    courts.add('Court 2');
-  }
-  return Array.from(courts);
+  return ['Court One', 'Court 2'];
+}
+
+function normalizeCourtName(value) {
+  const court = String(value || '').trim().toLowerCase();
+  const compact = court.replace(/[\s_-]+/g, '');
+  if (court.includes('training') || compact.includes('courttwo') || compact.includes('court2') || compact === '2') return 'Court 2';
+  if (compact.includes('courtone') || compact.includes('court1') || compact === '1') return 'Court One';
+  return String(value || '').trim();
 }
 
 function onScheduleDateChange(event) {
@@ -826,6 +1910,7 @@ function onScheduleDateChange(event) {
   if (!input || !input.value) return;
   selectedCalendarDate = input.value;
   renderScheduleModal();
+  loadBlockedTimesForSchedule();
 }
 
 function parseBookingHour(timeValue) {
@@ -863,11 +1948,8 @@ function getBookingInitials(name) {
 function renderScheduleModal() {
   const grid = document.getElementById('scheduleGrid');
   const dateInput = document.getElementById('scheduleDateInput');
-  const detailTitle = document.getElementById('scheduleDayDetailTitle');
-  const detailSummary = document.getElementById('scheduleDayDetailSummary');
-  const detailList = document.getElementById('scheduleDayDetailList');
 
-  if (!grid || !dateInput || !detailTitle || !detailSummary || !detailList) return;
+  if (!grid || !dateInput) return;
 
   const activeDate = selectedCalendarDate ? new Date(selectedCalendarDate) : new Date();
   if (isNaN(activeDate.getTime())) {
@@ -878,10 +1960,21 @@ function renderScheduleModal() {
   const courts = getScheduleCourts();
 
   const bookings = getBookingsForDate(selectedCalendarDate);
+  const courtOneBookings = bookings.filter(booking => normalizeCourtName(booking.court || booking.court_name) === 'Court One');
+  const trainingCourtBookings = bookings.filter(booking => normalizeCourtName(booking.court || booking.court_name) === 'Court 2');
+  const counts = document.getElementById('scheduleBookingCounts');
+  if (counts) {
+    counts.innerHTML = `
+      <span class="court-one-count">Court 1: <strong>${courtOneBookings.length}</strong></span>
+      <span class="training-court-count">Court 2: <strong>${trainingCourtBookings.length}</strong></span>
+      <span class="overall-count">Overall: <strong>${bookings.length}</strong></span>
+    `;
+  }
+  const blockedByCourtHour = new Set(blockedTimeSlots.map(block => `${normalizeCourtName(block.court)}|${parseBookingHour(block.time_slot)}`));
   const bookingsByCourtHour = {};
   courts.forEach(court => { bookingsByCourtHour[court] = {}; });
   bookings.forEach(booking => {
-    const courtName = booking.court || booking.court_name || 'Court';
+    const courtName = normalizeCourtName(booking.court || booking.court_name || 'Court');
     const hour = parseBookingHour(booking.time_slot || booking.booking_time || '');
     if (hour === null) return;
     const list = bookingsByCourtHour[courtName] || {};
@@ -899,8 +1992,8 @@ function renderScheduleModal() {
   headerRow.appendChild(headerTime);
   courts.forEach(court => {
     const cell = document.createElement('div');
-    cell.className = 'schedule-cell header';
-    cell.textContent = court;
+    cell.className = `schedule-cell header${court === 'Court 2' ? ' training-court-header' : ''}`;
+    cell.textContent = court === 'Court One' ? 'Court 1' : 'Court 2';
     headerRow.appendChild(cell);
   });
   grid.appendChild(headerRow);
@@ -916,9 +2009,12 @@ function renderScheduleModal() {
     courts.forEach(court => {
       const slotCell = document.createElement('button');
       slotCell.type = 'button';
-      slotCell.className = 'schedule-cell slot-cell';
-      const slotBookings = bookingsByCourtHour[court]?.[hour] || [];
-      if (slotBookings.length === 0) {
+      slotCell.className = `schedule-cell slot-cell${court === 'Court 2' ? ' training-court-slot' : ''}`;
+      const slotBookings = (bookingsByCourtHour[court] || bookingsByCourtHour[normalizeCourtName(court)])?.[hour] || [];
+      if (blockedByCourtHour.has(`${court}|${hour}`)) {
+        slotCell.classList.add('slot-blocked');
+        slotCell.innerHTML = '<span class="slot-initials">Blocked</span><span class="slot-subtitle">Unavailable</span>';
+      } else if (slotBookings.length === 0) {
         slotCell.classList.add('slot-empty');
         slotCell.innerHTML = '<span class="slot-subtitle">Available</span>';
       } else {
@@ -927,6 +2023,7 @@ function renderScheduleModal() {
         slotCell.innerHTML = `
           <div class="slot-initials">${initials}</div>
           <div class="slot-title">${slotBookings[0].customer_name || 'Booked'}</div>
+          ${slotBookings[0].reference_code ? `<div class="slot-reference">${slotBookings[0].reference_code}</div>` : ''}
           <div class="slot-subtitle">${slotBookings.length > 1 ? `${slotBookings.length} bookings` : (slotBookings[0].time_slot || slotBookings[0].booking_time || 'Booked')}</div>
         `;
       }
@@ -940,30 +2037,20 @@ function renderScheduleModal() {
     grid.appendChild(row);
   }
 
-  detailTitle.textContent = new Date(selectedCalendarDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  detailSummary.textContent = bookings.length === 0 ? 'No bookings' : `${bookings.length} booking${bookings.length === 1 ? '' : 's'}`;
-  detailList.innerHTML = '';
+}
 
-  if (bookings.length === 0) {
-    detailList.innerHTML = '<div class="empty-list">No bookings found for this day.</div>';
-  } else {
-    bookings.forEach(booking => {
-      const item = document.createElement('div');
-      item.className = 'calendar-detail-item';
-      const info = document.createElement('div');
-      info.innerHTML = `
-        <strong>${booking.customer_name || 'Unknown'}</strong>
-        <div class="calendar-detail-meta">${booking.court || booking.court_name || 'Court'} · ${booking.time_slot || booking.booking_time || 'TBD'}</div>
-        <div class="calendar-detail-meta">Ref: ${booking.reference_code || 'N/A'} · ₱${(booking.price || booking.rate || 0).toLocaleString()}</div>
-      `;
-      const badge = document.createElement('span');
-      badge.className = `status-badge ${booking.status || 'pending'}`;
-      badge.textContent = booking.status || 'pending';
-      item.appendChild(info);
-      item.appendChild(badge);
-      detailList.appendChild(item);
-    });
+async function loadBlockedTimesForSchedule() {
+  if (!supabaseClient || !selectedCalendarDate) return;
+  const { data, error } = await supabaseClient
+    .from('blocked_time_slots')
+    .select('court, time_slot')
+    .eq('blocked_date', selectedCalendarDate);
+  if (error) {
+    console.error('Failed to load schedule blocks:', error);
+    return;
   }
+  blockedTimeSlots = data || [];
+  renderScheduleModal();
 }
 
 function formatScheduleHour(hour) {
@@ -977,12 +2064,273 @@ function formatScheduleHour(hour) {
 
 function openCalendarModal(date = new Date()) {
   selectedCalendarDate = formatDateKey(date);
-  document.getElementById('calendarModal').classList.add('open');
+  const modal = document.getElementById('calendarModal');
+  modal.classList.add('open');
+  document.body.classList.add('modal-open');
   renderScheduleModal();
+  loadBlockedTimesForSchedule();
+  document.getElementById('scheduleDateInput')?.focus();
+}
+
+function getBlockTimeOptions() {
+  const options = [];
+  ['Court One', 'Court 2'].forEach(court => {
+    for (let hour = 0; hour < 24; hour++) {
+      options.push({ court, hour, time_slot: formatScheduleHour(hour) });
+    }
+  });
+  return options;
+}
+
+async function loadBlockTimesForDate() {
+  const dateInput = document.getElementById('blockTimesDate');
+  const optionsContainer = document.getElementById('blockTimesOptions');
+  if (!dateInput || !optionsContainer || !dateInput.value) return;
+
+  optionsContainer.innerHTML = '<div class="empty-list">Loading timeslots...</div>';
+  const { data, error } = await supabaseClient
+    .from('blocked_time_slots')
+    .select('court, time_slot')
+    .eq('blocked_date', dateInput.value);
+  if (error) {
+    console.error('Failed to load blocked times:', error);
+    optionsContainer.innerHTML = '<div class="empty-list">Unable to load blocked timeslots.</div>';
+    return;
+  }
+
+  blockedTimeSlots = data || [];
+  const bookedKeys = new Set();
+  getBookingsForDate(dateInput.value).forEach(booking => {
+    const court = normalizeCourtName(booking.court || booking.court_name || '');
+    const hour = parseBookingHour(booking.time_slot || booking.booking_time);
+    if (hour !== null) bookedKeys.add(`${court}|${hour}`);
+  });
+  optionsContainer.innerHTML = '';
+  const courtOneColumn = document.createElement('div');
+  courtOneColumn.className = 'block-time-court-column';
+  courtOneColumn.innerHTML = '<h4>Court 1</h4>';
+  const trainingColumn = document.createElement('div');
+  trainingColumn.className = 'block-time-court-column';
+  trainingColumn.innerHTML = '<h4>Court 2</h4>';
+
+  getBlockTimeOptions().forEach(option => {
+    const isBooked = bookedKeys.has(`${option.court}|${option.hour}`);
+    const isBlocked = blockedTimeSlots.some(block => normalizeCourtName(block.court) === option.court && parseBookingHour(block.time_slot) === option.hour);
+    const label = document.createElement('label');
+    label.className = `block-time-option${isBooked ? ' is-booked' : ''}`;
+    label.innerHTML = `<input type="checkbox" value="${option.hour}" data-court="${option.court}"${isBlocked ? ' checked' : ''}${isBooked ? ' disabled' : ''}><span>${option.court} · ${option.time_slot}${isBooked ? ' · Booked' : ''}</span>`;
+    (option.court === 'Court One' ? courtOneColumn : trainingColumn).appendChild(label);
+  });
+  optionsContainer.appendChild(courtOneColumn);
+  optionsContainer.appendChild(trainingColumn);
+}
+
+function openBlockTimesModal() {
+  const dateInput = document.getElementById('blockTimesDate');
+  if (!dateInput) return;
+  dateInput.value = selectedCalendarDate || formatDateKey(new Date());
+  document.getElementById('blockTimesModal').classList.add('open');
+  loadBlockTimesForDate();
+}
+
+function closeBlockTimesModal() {
+  document.getElementById('blockTimesModal')?.classList.remove('open');
+}
+
+async function saveBlockedTimes() {
+  const date = document.getElementById('blockTimesDate')?.value;
+  const options = [...document.querySelectorAll('#blockTimesOptions input[type="checkbox"]:checked')];
+  if (!date) return showToast('Select a date first');
+  if (!supabaseClient) return showToast('Database connection unavailable');
+
+  const selected = options.map(input => ({ blocked_date: date, court: input.dataset.court, time_slot: formatScheduleHour(Number(input.value)) }));
+  const { data: existing, error: existingError } = await supabaseClient
+    .from('blocked_time_slots')
+    .select('court, time_slot')
+    .eq('blocked_date', date);
+  if (existingError) {
+    console.error('Failed to load existing blocked times:', existingError);
+    return showToast('Could not update blocked timeslots');
+  }
+
+  const slotKey = slot => `${slot.court}|${slot.time_slot}`;
+  const existingKeys = new Set((existing || []).map(slotKey));
+  const selectedKeys = new Set(selected.map(slotKey));
+  const addedSlots = selected.filter(slot => !existingKeys.has(slotKey(slot)));
+  const removedSlots = (existing || []).filter(slot => !selectedKeys.has(slotKey(slot)));
+  const { error: deleteError } = await supabaseClient.from('blocked_time_slots').delete().eq('blocked_date', date);
+  if (deleteError) {
+    console.error('Failed to update blocked times:', deleteError);
+    return showToast('Could not update blocked timeslots');
+  }
+  if (selected.length) {
+    const { error } = await supabaseClient.from('blocked_time_slots').insert(selected);
+    if (error) {
+      console.error('Failed to save blocked times:', error);
+      return showToast('Could not save blocked timeslots');
+    }
+  }
+
+  const changedSlots = [
+    ...addedSlots.map(slot => ({ ...slot, action: 'blocked' })),
+    ...removedSlots.map(slot => ({ blocked_date: date, ...slot, action: 'unblocked' }))
+  ];
+  if (changedSlots.length) {
+    const actionSummary = [
+      addedSlots.length ? `Blocked ${addedSlots.length} slot${addedSlots.length === 1 ? '' : 's'}` : '',
+      removedSlots.length ? `unblocked ${removedSlots.length} slot${removedSlots.length === 1 ? '' : 's'}` : ''
+    ].filter(Boolean).join('; ');
+    await addAdminLog(
+      'blocked',
+      'Blocked time slots updated',
+      `${actionSummary} for ${date}.`,
+      {
+        booking_date: date,
+        bookings: changedSlots.map(slot => ({
+          booking_date: date,
+          booking_time: slot.time_slot,
+          court: slot.court,
+          action: slot.action
+        }))
+      }
+    );
+  }
+
+  blockedTimeSlots = selected;
+  selectedCalendarDate = date;
+  closeBlockTimesModal();
+  renderScheduleModal();
+  showToast(`${selected.length} timeslot${selected.length === 1 ? '' : 's'} blocked`);
+}
+
+function getExpiredBookings() {
+  return (allBookings || []).filter(booking => String(booking.status || '').toLowerCase() === 'expired');
+}
+
+function openExpiredBookingsModal() {
+  const modal = document.getElementById('expiredBookingsModal');
+  if (!modal) return;
+  renderExpiredBookings();
+  modal.classList.add('open');
+}
+
+function closeExpiredBookingsModal() {
+  document.getElementById('expiredBookingsModal')?.classList.remove('open');
+}
+
+function renderExpiredBookings() {
+  const list = document.getElementById('expiredBookingList');
+  const count = document.getElementById('expiredBookingsCount');
+  const deleteAllButton = document.getElementById('deleteAllExpiredBtn');
+  const summary = document.getElementById('expiredBookingsSummary');
+  if (!list || !count || !deleteAllButton || !summary) return;
+
+  const expiredBookings = getExpiredBookings();
+  count.textContent = `${expiredBookings.length} expired slot${expiredBookings.length === 1 ? '' : 's'}`;
+  deleteAllButton.disabled = expiredBookings.length === 0;
+  summary.textContent = expiredBookings.length
+    ? 'Delete expired slots manually when they are no longer needed.'
+    : 'No expired bookings to review.';
+  list.innerHTML = '';
+
+  if (!expiredBookings.length) {
+    list.innerHTML = '<div class="empty-list">No expired bookings found.</div>';
+    return;
+  }
+
+  expiredBookings
+    .slice()
+    .sort((a, b) => String(b.booking_date || '').localeCompare(String(a.booking_date || '')))
+    .forEach(booking => {
+      const item = document.createElement('div');
+      item.className = 'expired-booking-item';
+
+      const details = document.createElement('div');
+      details.className = 'expired-booking-details';
+      const customer = document.createElement('strong');
+      customer.textContent = booking.customer_name || 'Unknown customer';
+      const meta = document.createElement('span');
+      meta.textContent = `${booking.reference_code || 'No reference'} · ${booking.booking_date || 'No date'} · ${booking.time_slot || booking.booking_time || 'No time'} · ${booking.court || booking.court_name || 'Court'}`;
+      details.append(customer, meta);
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'action-btn delete-btn';
+      deleteButton.textContent = 'Delete';
+      deleteButton.onclick = () => deleteExpiredBooking(booking);
+      item.append(details, deleteButton);
+      list.appendChild(item);
+    });
+}
+
+async function deleteExpiredBooking(booking) {
+  if (!supabaseClient || !booking?.id) {
+    showToast('Database connection unavailable');
+    return;
+  }
+  const confirmed = confirm(`Delete expired booking for ${booking.customer_name || 'this customer'}?\n\n${booking.booking_date || ''} · ${booking.time_slot || booking.booking_time || ''}`);
+  if (!confirmed) return;
+
+  const { error } = await supabaseClient.from('bookings').delete().eq('id', booking.id);
+  if (error) {
+    console.error('Failed to delete expired booking:', error);
+    showToast('Failed to delete expired booking');
+    return;
+  }
+
+  await addAdminLog(
+    'deleted',
+    'Expired booking deleted',
+    `Deleted expired booking ${booking.reference_code || booking.id} for ${booking.customer_name || 'Unknown customer'}.`,
+    {
+      bookingId: booking.id,
+      reference_code: booking.reference_code,
+      customer_name: booking.customer_name,
+      booking_date: booking.booking_date,
+      booking_time: booking.booking_time || booking.time_slot,
+      court: booking.court || booking.court_name,
+      amount: booking.price || booking.rate
+    }
+  );
+  showToast('Expired booking deleted');
+  await loadBookings();
+  renderExpiredBookings();
+}
+
+async function deleteAllExpiredBookings() {
+  const expiredBookings = getExpiredBookings();
+  if (!expiredBookings.length || !supabaseClient) return;
+  const confirmed = confirm(`Delete all ${expiredBookings.length} expired booking slots? This cannot be undone.`);
+  if (!confirmed) return;
+
+  const ids = expiredBookings.map(booking => booking.id).filter(Boolean);
+  const { error } = await supabaseClient.from('bookings').delete().in('id', ids);
+  if (error) {
+    console.error('Failed to delete expired bookings:', error);
+    showToast('Failed to delete expired bookings');
+    return;
+  }
+
+  await addAdminLog('deleted', 'Expired bookings deleted', `Deleted ${ids.length} expired booking slot(s).`, {
+    bookingIds: ids,
+    bookings: expiredBookings.map(booking => ({
+      bookingId: booking.id,
+      reference_code: booking.reference_code,
+      customer_name: booking.customer_name,
+      booking_date: booking.booking_date,
+      booking_time: booking.booking_time || booking.time_slot,
+      court: booking.court || booking.court_name,
+      amount: booking.price || booking.rate
+    }))
+  });
+  showToast('Expired bookings deleted');
+  await loadBookings();
+  renderExpiredBookings();
 }
 
 function closeCalendarModal() {
   document.getElementById('calendarModal').classList.remove('open');
+  document.body.classList.remove('modal-open');
 }
 
 function changeScheduleDay(step) {
@@ -990,12 +2338,14 @@ function changeScheduleDay(step) {
   current.setDate(current.getDate() + step);
   selectedCalendarDate = formatDateKey(current);
   renderScheduleModal();
+  loadBlockedTimesForSchedule();
 }
 
 function goToScheduleToday() {
   const today = new Date();
   selectedCalendarDate = formatDateKey(today);
   renderScheduleModal();
+  loadBlockedTimesForSchedule();
 }
 
 // Update earnings cards
@@ -1059,6 +2409,26 @@ function updateEarnings() {
   });
   const monthlyEarnings = monthlyBookings.reduce((sum, b) => sum + (parseFloat(b.price) || parseFloat(b.rate) || 0), 0);
 
+  const getCourtName = booking => {
+    const court = String(booking.court || booking.court_name || '').trim().toLowerCase();
+    return normalizeCourtName(court) === 'Court 2' ? 'Court 2' : 'Court One';
+  };
+  const courtSales = monthlyBookings.reduce((totals, booking) => {
+    const court = getCourtName(booking);
+    const amount = parseFloat(booking.price) || parseFloat(booking.rate) || 0;
+    totals[court].sales += amount;
+    totals[court].bookings += 1;
+    return totals;
+  }, {
+    'Court One': { sales: 0, bookings: 0 },
+    'Court 2': { sales: 0, bookings: 0 }
+  });
+  const highestSales = Math.max(courtSales['Court One'].sales, courtSales['Court 2'].sales);
+  const topCourt = highestSales > 0
+    ? (courtSales['Court One'].sales >= courtSales['Court 2'].sales ? 'Court 1' : 'Court 2')
+    : 'No sales yet';
+  const averageBookingValue = monthlyBookings.length ? monthlyEarnings / monthlyBookings.length : 0;
+
   // Pending payments from all bookings
   const pendingBookings = bookingsToUse.filter(b => b.status === 'pending');
   const pendingAmount = pendingBookings.reduce((sum, b) => sum + (parseFloat(b.price) || parseFloat(b.rate) || 0), 0);
@@ -1073,13 +2443,30 @@ function updateEarnings() {
   document.getElementById('monthlyEarnings').textContent = '₱' + monthlyEarnings.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
   document.getElementById('monthlyCount').textContent = `${monthlyBookings.length} booking${monthlyBookings.length !== 1 ? 's' : ''}`;
 
+  const formatInsightCurrency = value => `₱${value.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const updateInsightText = (id, value) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value;
+  };
+  updateInsightText('salesInsightsPeriod', `${selectedDate.toLocaleString('en-US', { month: 'long', year: 'numeric' })} sales by court`);
+  updateInsightText('courtOneSales', formatInsightCurrency(courtSales['Court One'].sales));
+  updateInsightText('courtOneSalesCount', `${courtSales['Court One'].bookings} booking${courtSales['Court One'].bookings !== 1 ? 's' : ''}`);
+  updateInsightText('trainingCourtSales', formatInsightCurrency(courtSales['Court 2'].sales));
+  updateInsightText('trainingCourtSalesCount', `${courtSales['Court 2'].bookings} booking${courtSales['Court 2'].bookings !== 1 ? 's' : ''}`);
+  updateInsightText('topSalesCourt', topCourt);
+  updateInsightText('averageBookingValue', `Average booking: ${formatInsightCurrency(averageBookingValue)}`);
+  updateInsightText('courtOneBarValue', formatInsightCurrency(courtSales['Court One'].sales));
+  updateInsightText('trainingCourtBarValue', formatInsightCurrency(courtSales['Court 2'].sales));
+  const courtOneBar = document.getElementById('courtOneSalesBar');
+  const trainingCourtBar = document.getElementById('trainingCourtSalesBar');
+  if (courtOneBar) courtOneBar.style.width = highestSales ? `${(courtSales['Court One'].sales / highestSales) * 100}%` : '0%';
+  if (trainingCourtBar) trainingCourtBar.style.width = highestSales ? `${(courtSales['Court 2'].sales / highestSales) * 100}%` : '0%';
+
   document.getElementById('pendingAmount').textContent = '₱' + pendingAmount.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
   document.getElementById('pendingCount').textContent = `${pendingBookings.length} booking${pendingBookings.length !== 1 ? 's' : ''}`;
-
-  console.log('Earnings updated:', { todayEarnings, weeklyEarnings, monthlyEarnings, pendingAmount, pendingCount: pendingBookings.length, selectedDate: formatDateKey(selectedDate), weekStart: formatDateKey(weekStart), weekEnd: formatDateKey(weekEnd), monthStart: formatDateKey(monthStart), monthEnd: formatDateKey(monthEnd) });
 }
 
-const earningsModalPassword = 'dacipickle26';
+const earningsModalPassword = 'picklesocial26';
 
 function openEarningsModalWithPassword() {
   const modal = document.getElementById('earningsPasswordModal');
@@ -1146,13 +2533,19 @@ function openAddBookingModal() {
 
   if (customerNameInput) customerNameInput.value = '';
   if (phoneInput) phoneInput.value = '';
-  if (timeInput) timeInput.value = '';
+  if (timeInput) timeInput.innerHTML = '<option value="">Select an available time</option>';
+  adminBookingSelectedSlots.clear();
+  const reviewPanel = document.getElementById('adminBookingReview');
+  if (reviewPanel) reviewPanel.hidden = true;
+  const reviewButton = document.getElementById('reviewAdminBookingBtn');
+  if (reviewButton) reviewButton.hidden = false;
   if (courtSelect) courtSelect.value = 'Court One';
   if (statusSelect) statusSelect.value = 'paid';
   if (notesInput) notesInput.value = '';
 
   updateAddBookingRate();
   modal.classList.add('open');
+  loadAdminBookingAvailability();
   setTimeout(() => customerNameInput?.focus(), 120);
 }
 
@@ -1166,8 +2559,160 @@ function updateAddBookingRate() {
   const rateValue = document.getElementById('addBookingRateValue');
   if (!dateInput || !rateValue) return;
 
-  const rate = getBookingRateForDate(dateInput.value);
-  rateValue.textContent = `₱${rate}`;
+  const timeInput = document.getElementById('addBookingTime');
+  const totalRate = [...adminBookingSelectedSlots].reduce((sum, value) => {
+    const separatorIndex = value.indexOf('|');
+    const court = value.slice(0, separatorIndex);
+    const timeSlot = value.slice(separatorIndex + 1);
+    return sum + (normalizeCourtName(court) === 'Court 2' ? 350 : getBookingRateForDate(dateInput.value, timeSlot));
+  }, 0);
+  rateValue.textContent = `₱${totalRate}`;
+}
+
+async function loadAdminBookingAvailability() {
+  const date = document.getElementById('addBookingDate')?.value;
+  const courtSelect = document.getElementById('addBookingCourt');
+  const court = courtSelect?.value;
+  const timeSelect = document.getElementById('addBookingTime');
+  const availability = document.getElementById('adminBookingAvailability');
+  if (!date || !court || !timeSelect || !availability || !supabaseClient) return;
+
+  timeSelect.innerHTML = '<option value="">Loading available times...</option>';
+  availability.innerHTML = '<span class="availability-loading">Checking live availability...</span>';
+
+  const [{ data: bookings, error: bookingError }, { data: blockedSlots, error: blockedError }] = await Promise.all([
+    supabaseClient.from('bookings').select('status, court, court_name, time_slot, booking_time').eq('booking_date', date),
+    supabaseClient.from('blocked_time_slots').select('court, time_slot').eq('blocked_date', date)
+  ]);
+  if (bookingError || blockedError) {
+    console.error('Failed to load admin booking availability:', bookingError || blockedError);
+    timeSelect.innerHTML = '<option value="">Availability unavailable</option>';
+    availability.innerHTML = '<span class="availability-error">Unable to check availability.</span>';
+    return;
+  }
+
+  const activeStatuses = new Set(['pending', 'paid', 'confirmed', 'completed', 'unpaid']);
+  const selectedDate = new Date(`${date}T00:00:00`);
+  const today = new Date();
+  const isPastDate = selectedDate < new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const isToday = selectedDate.toDateString() === today.toDateString();
+  const formatSlotTime = hour => {
+    const start = new Date(2000, 0, 1, hour);
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    const format = value => value.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return `${format(start)} - ${format(end)}`;
+  };
+  timeSelect.innerHTML = '<option value="">Select an available time</option>';
+  availability.innerHTML = '';
+  ['Court One', 'Court 2'].forEach(availableCourt => {
+    const column = document.createElement('div');
+    column.className = 'admin-booking-court-column';
+    const heading = document.createElement('h4');
+    heading.textContent = availableCourt === 'Court One' ? 'Court 1' : 'Court 2';
+    column.appendChild(heading);
+    const statusByHour = new Map();
+    (bookings || []).forEach(booking => {
+      if (!activeStatuses.has(String(booking.status || '').toLowerCase())) return;
+      if (normalizeCourtName(booking.court || booking.court_name) !== availableCourt) return;
+      const hour = getSlotStartMinutes(booking.time_slot || booking.booking_time);
+      if (Number.isFinite(hour)) statusByHour.set(hour, String(booking.status || '').toLowerCase() === 'pending' ? 'Pending' : 'Booked');
+    });
+    const blockedHours = new Set((blockedSlots || [])
+      .filter(slot => normalizeCourtName(slot.court) === availableCourt)
+      .map(slot => getSlotStartMinutes(slot.time_slot)));
+
+    for (let hour = 0; hour < 24; hour++) {
+      const minutes = hour * 60;
+      const timeSlot = formatSlotTime(hour);
+      const status = statusByHour.get(minutes) || (blockedHours.has(minutes) ? 'Blocked' : isPastDate || (isToday && minutes <= today.getHours() * 60) ? 'Past' : 'Available');
+      const option = document.createElement('option');
+      option.value = timeSlot;
+      option.textContent = `${timeSlot} · ${status}`;
+      option.disabled = status !== 'Available';
+      timeSelect.appendChild(option);
+
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = `admin-booking-slot ${status.toLowerCase()}`;
+      row.dataset.court = availableCourt;
+      row.dataset.time = timeSlot;
+      row.disabled = status !== 'Available';
+      row.innerHTML = `<span>${timeSlot}</span><strong>${status}</strong>`;
+      row.onclick = () => {
+        const slotKey = `${availableCourt}|${timeSlot}`;
+        if (adminBookingSelectedSlots.has(slotKey)) adminBookingSelectedSlots.delete(slotKey);
+        else adminBookingSelectedSlots.add(slotKey);
+        row.classList.toggle('selected', adminBookingSelectedSlots.has(slotKey));
+        updateAddBookingRate();
+      };
+      row.classList.toggle('selected', adminBookingSelectedSlots.has(`${availableCourt}|${timeSlot}`));
+      column.appendChild(row);
+    }
+    availability.appendChild(column);
+  });
+  updateAddBookingRate();
+}
+
+function getAdminBookingReviewData() {
+  const customerName = document.getElementById('addBookingCustomerName')?.value?.trim() || '';
+  const bookingDate = document.getElementById('addBookingDate')?.value || '';
+  const notes = document.getElementById('addBookingNotes')?.value?.trim() || '';
+  const selections = [...adminBookingSelectedSlots].map(value => {
+    const separatorIndex = value.indexOf('|');
+    const court = value.slice(0, separatorIndex);
+    const timeSlot = formatTimeInputValue(value.slice(separatorIndex + 1));
+    return { court, timeSlot };
+  });
+  return { customerName, bookingDate, notes, selections };
+}
+
+function escapeAdminReviewText(value) {
+  return String(value || '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[character]));
+}
+
+function reviewAdminBooking() {
+  const review = getAdminBookingReviewData();
+  if (!review.customerName || !review.bookingDate || !review.selections.length) {
+    showToast('Enter a Facebook name, date, and select at least one time slot');
+    return;
+  }
+
+  const total = review.selections.reduce((sum, selection) => sum + (normalizeCourtName(selection.court) === 'Court 2'
+    ? 350
+    : getBookingRateForDate(review.bookingDate, selection.timeSlot)), 0);
+  const courtOneTimes = review.selections
+    .filter(selection => selection.court === 'Court One')
+    .map(selection => selection.timeSlot);
+  const trainingCourtTimes = review.selections
+    .filter(selection => normalizeCourtName(selection.court) === 'Court 2')
+    .map(selection => selection.timeSlot);
+  const details = document.getElementById('adminBookingReviewDetails');
+  if (details) {
+    details.innerHTML = `
+      <div><span>Facebook Name</span><strong>${escapeAdminReviewText(review.customerName)}</strong></div>
+      <div><span>Date</span><strong>${escapeAdminReviewText(review.bookingDate)}</strong></div>
+      <div class="review-court-row"><span>Court 1:</span><strong>${courtOneTimes.length ? courtOneTimes.map(escapeAdminReviewText).join('<br>') : 'None selected'}</strong></div>
+      <div class="review-court-row"><span>Court 2:</span><strong>${trainingCourtTimes.length ? trainingCourtTimes.map(escapeAdminReviewText).join('<br>') : 'None selected'}</strong></div>
+      <div><span>Total</span><strong>₱${total.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></div>
+    `;
+  }
+  const reviewPanel = document.getElementById('adminBookingReview');
+  if (reviewPanel) reviewPanel.hidden = false;
+  const reviewButton = document.getElementById('reviewAdminBookingBtn');
+  if (reviewButton) reviewButton.hidden = true;
+}
+
+function editAdminBookingSelection() {
+  const reviewPanel = document.getElementById('adminBookingReview');
+  if (reviewPanel) reviewPanel.hidden = true;
+  const reviewButton = document.getElementById('reviewAdminBookingBtn');
+  if (reviewButton) reviewButton.hidden = false;
 }
 
 async function submitAddBooking() {
@@ -1179,45 +2724,102 @@ async function submitAddBooking() {
   const customerName = document.getElementById('addBookingCustomerName')?.value?.trim() || '';
   const phone = document.getElementById('addBookingPhone')?.value?.trim() || '';
   const bookingDate = document.getElementById('addBookingDate')?.value || '';
-  const bookingTime = document.getElementById('addBookingTime')?.value || '';
-  const timeSlot = bookingTime ? formatTimeInputValue(bookingTime) : '';
-  const court = document.getElementById('addBookingCourt')?.value || '';
-  const status = document.getElementById('addBookingStatus')?.value || 'paid';
+  const selectedBookings = [...adminBookingSelectedSlots].map(value => {
+    const separatorIndex = value.indexOf('|');
+    return {
+      court: value.slice(0, separatorIndex),
+      timeSlot: formatTimeInputValue(value.slice(separatorIndex + 1))
+    };
+  });
+  const status = 'pending';
   const notes = document.getElementById('addBookingNotes')?.value?.trim() || '';
 
   const missing = [];
   if (!customerName) missing.push('name');
-  if (!phone) missing.push('phone');
   if (!bookingDate) missing.push('date');
-  if (!timeSlot) missing.push('time');
-  if (!court) missing.push('court');
+  if (!selectedBookings.length) missing.push('time');
 
   if (missing.length > 0) {
     showToast(`Please fill in ${missing.join(', ')}.`);
     return;
   }
 
-  const price = getBookingRateForDate(bookingDate);
-  const referenceCode = `PKL-${Date.now().toString(36).toUpperCase()}`;
-
-  const payload = {
-    reference_code: referenceCode,
-    customer_name: customerName,
-    phone_number: phone,
-    booking_date: bookingDate,
-    time_slot: timeSlot,
-    booking_time: timeSlot,
-    court,
-    court_name: court,
-    status,
-    price,
-    rate: price,
-    notes: notes || null,
-    created_at: new Date().toISOString()
-  };
+  const bookingStartMinutes = selectedBookings.map(booking => getSlotStartMinutes(booking.timeSlot));
+  if (bookingStartMinutes.some(minutes => !Number.isFinite(minutes) || minutes >= 24 * 60)) {
+    showToast('Select a valid booking time');
+    return;
+  }
 
   try {
-    const { error } = await supabaseClient.from('bookings').insert([payload]);
+    const [{ data: existingBookings, error: bookingError }, { data: blockedSlots, error: blockedError }] = await Promise.all([
+      supabaseClient
+        .from('bookings')
+        .select('id, status, court, court_name, time_slot, booking_time')
+        .eq('booking_date', bookingDate),
+      supabaseClient
+        .from('blocked_time_slots')
+        .select('court, time_slot')
+        .eq('blocked_date', bookingDate)
+    ]);
+
+    if (bookingError || blockedError) {
+      console.error('Failed to verify admin booking availability:', bookingError || blockedError);
+      showToast('Could not verify slot availability');
+      return;
+    }
+
+    const activeStatuses = new Set(['pending', 'paid', 'confirmed', 'completed', 'unpaid']);
+    for (let index = 0; index < selectedBookings.length; index++) {
+      const { court, timeSlot } = selectedBookings[index];
+      const normalizedCourt = normalizeCourtName(court);
+      const startMinutes = bookingStartMinutes[index];
+      const alreadyBooked = (existingBookings || []).some(existingBooking =>
+        activeStatuses.has(String(existingBooking.status || '').toLowerCase()) &&
+        normalizeCourtName(existingBooking.court || existingBooking.court_name) === normalizedCourt &&
+        getSlotStartMinutes(existingBooking.time_slot || existingBooking.booking_time) === startMinutes
+      );
+      if (alreadyBooked) {
+        showToast(`${court} is already booked for ${timeSlot}`);
+        return;
+      }
+
+      const isBlocked = (blockedSlots || []).some(slot =>
+        normalizeCourtName(slot.court) === normalizedCourt &&
+        getSlotStartMinutes(slot.time_slot) === startMinutes
+      );
+      if (isBlocked) {
+        showToast(`${court} is blocked for ${timeSlot}`);
+        return;
+      }
+    }
+  } catch (availabilityError) {
+    console.error('Admin booking availability check failed:', availabilityError);
+    showToast('Could not verify slot availability');
+    return;
+  }
+
+  const referenceCode = `PKL-${Date.now().toString(36).toUpperCase()}`;
+  const payloads = selectedBookings.map(({ court, timeSlot }) => {
+    const price = normalizeCourtName(court) === 'Court 2' ? 350 : getBookingRateForDate(bookingDate, timeSlot);
+    return {
+      reference_code: referenceCode,
+      customer_name: customerName,
+      phone_number: phone,
+      booking_date: bookingDate,
+      time_slot: timeSlot,
+      booking_time: timeSlot,
+      court,
+      court_name: court,
+      status,
+      price,
+      rate: price,
+      notes: notes || null,
+      created_at: new Date().toISOString()
+    };
+  });
+
+  try {
+    const { error } = await supabaseClient.from('bookings').insert(payloads);
     if (error) throw error;
 
     showToast('Booking added successfully');
@@ -1285,15 +2887,68 @@ function formatDateKey(date) {
 }
 
 // Pagination
+function buildPageButtons(totalPages, currentPage) {
+  const buttons = [];
+  const maxButtons = 20;
+
+  if (totalPages <= maxButtons) {
+    for (let page = 1; page <= totalPages; page++) buttons.push(page);
+    return buttons;
+  }
+
+  const visible = new Set([1, 2, totalPages - 1, totalPages, currentPage]);
+  if (currentPage - 1 > 1) visible.add(currentPage - 1);
+  if (currentPage + 1 < totalPages) visible.add(currentPage + 1);
+  if (currentPage - 2 > 1) visible.add(currentPage - 2);
+  if (currentPage + 2 < totalPages) visible.add(currentPage + 2);
+
+  const sorted = Array.from(visible).filter(page => page >= 1 && page <= totalPages).sort((a, b) => a - b);
+  const expanded = [];
+  let last = 0;
+  sorted.forEach(page => {
+    if (page - last > 1) expanded.push(page - last === 2 ? last + 1 : '...');
+    expanded.push(page);
+    last = page;
+  });
+  return expanded;
+}
+
 function updatePagination() {
   const totalPages = Math.ceil(groupedBookings.length / itemsPerPage);
-  const pageInfo = document.getElementById('pageInfo');
   const prevBtn = document.getElementById('prevPageBtn');
   const nextBtn = document.getElementById('nextPageBtn');
+  const pageButtons = document.getElementById('pageButtons');
 
-  pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
-  prevBtn.disabled = currentPage === 1;
-  nextBtn.disabled = currentPage >= totalPages;
+  if (prevBtn) prevBtn.disabled = currentPage === 1;
+  if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalPages === 0;
+
+  if (!pageButtons) return;
+  pageButtons.innerHTML = '';
+
+  const pages = buildPageButtons(totalPages, currentPage);
+  pages.forEach(page => {
+    if (page === '...') {
+      const ellipsis = document.createElement('span');
+      ellipsis.className = 'page-break';
+      ellipsis.textContent = '...';
+      pageButtons.appendChild(ellipsis);
+      return;
+    }
+
+    const btn = document.createElement('button');
+    btn.className = 'page-number-btn';
+    btn.textContent = page;
+    btn.disabled = page === currentPage;
+    if (page === currentPage) {
+      btn.classList.add('active');
+    }
+    btn.onclick = () => {
+      currentPage = page;
+      renderTable();
+      updatePagination();
+    };
+    pageButtons.appendChild(btn);
+  });
 }
 
 function openBookingDetails(group) {
@@ -1426,7 +3081,7 @@ function copyBookingDetailsConfirmation() {
     return `📅 ${formattedDate}\n${courtLines}`;
   }).join('\n\n');
 
-  const message = `BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for booking with DACI Pickle Hub! Your reservation has been successfully confirmed. ✅\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Paid: ${totalPaid}\n\n${dateBookingLines}\n\nThank you for booking with us! Your reservation has been successfully confirmed.`;
+  const message = `BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for booking with Daci Pickle Hub! Your reservation has been successfully confirmed. ✅\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Paid: ${totalPaid}\n\n${dateBookingLines}\n\nThank you for booking with us! Your reservation has been successfully confirmed.`;
 
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(message).then(() => {
@@ -1487,7 +3142,7 @@ function copyBookingDetailsPendingMessage() {
     return `📅 ${formattedDate}\n\n${courtLines}`;
   }).join('\n\n');
 
-  const message = `⏳ PENDING BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for your booking request at DACI Pickle Hub.\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Amount Due: ${totalDue}\n\n${formattedDateGroups}\n\n⚠️ Status: PENDING PAYMENT CONFIRMATION\n\nTo confirm your reservation, please send your GCash payment receipt together with your booking reference number via Messenger.\n\nYour selected time slots will remain reserved while awaiting payment verification.\n\nThank you, and we look forward to seeing you on the court! 🏓`;
+  const message = `⏳ PENDING BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for your booking request at Daci Pickle Hub.\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Amount Due: ${totalDue}\n\n${formattedDateGroups}\n\n⚠️ Status: PENDING PAYMENT CONFIRMATION\n\nTo confirm your reservation, please send your GCash payment receipt together with your booking reference number via Messenger.\n\nYour selected time slots will remain reserved while awaiting payment verification.\n\nThank you, and we look forward to seeing you on the court! 🏓`;
 
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(message).then(() => {
@@ -1509,7 +3164,7 @@ function previousPage() {
 }
 
 function nextPage() {
-  const totalPages = Math.ceil(filteredBookings.length / itemsPerPage);
+  const totalPages = Math.ceil(groupedBookings.length / itemsPerPage);
   if (currentPage < totalPages) {
     currentPage++;
     renderTable();
@@ -1655,6 +3310,33 @@ async function saveBookingChanges() {
     }
 
     console.log('Booking updated successfully');
+
+    if (currentEditingBooking.status !== 'expired' && status === 'expired') {
+      await addAdminLog(
+        'expired',
+        'Booking marked expired',
+        `Booking ${currentEditingBooking.reference_code || currentEditingBooking.id} was marked as expired manually.`,
+        {
+          bookingId: currentEditingBooking.id,
+          bookings: [{
+            bookingId: currentEditingBooking.id,
+            reference_code: currentEditingBooking.reference_code,
+            customer_name: name,
+            booking_date: currentEditingBooking.booking_date,
+            booking_time: currentEditingBooking.booking_time || currentEditingBooking.time_slot,
+            court: currentEditingBooking.court || currentEditingBooking.court_name,
+            amount: amount || currentEditingBooking.price || currentEditingBooking.rate
+          }],
+          reference_code: currentEditingBooking.reference_code,
+          customer_name: name,
+          booking_date: currentEditingBooking.booking_date,
+          booking_time: currentEditingBooking.booking_time || currentEditingBooking.time_slot,
+          court: currentEditingBooking.court || currentEditingBooking.court_name,
+          amount: amount || currentEditingBooking.price || currentEditingBooking.rate
+        }
+      );
+    }
+
     showToast('Booking updated successfully');
     closeEditModal();
     await loadBookings();
@@ -1736,6 +3418,29 @@ async function deleteBooking(booking) {
     }
 
     console.log('Booking deleted from database');
+    await addAdminLog(
+      'deleted',
+      'Booking deleted',
+      `Deleted booking ${booking.reference_code || booking.id} for ${booking.customer_name || 'Unknown'}.`,
+      {
+        bookingId: booking.id,
+        bookings: [{
+          bookingId: booking.id,
+          reference_code: booking.reference_code,
+          customer_name: booking.customer_name,
+          booking_date: booking.booking_date,
+          booking_time: booking.booking_time || booking.time_slot,
+          court: booking.court || booking.court_name,
+          amount: booking.price || booking.rate
+        }],
+        reference_code: booking.reference_code,
+        customer_name: booking.customer_name,
+        booking_date: booking.booking_date,
+        booking_time: booking.booking_time || booking.time_slot,
+        court: booking.court || booking.court_name,
+        amount: booking.price || booking.rate
+      }
+    );
     showToast('Booking deleted successfully');
     
     // Remove from local array and refresh UI immediately
@@ -1773,6 +3478,32 @@ async function deleteBookingGroup(group) {
     return;
   }
 
+  const deletedBookings = group.bookings.filter(b => deletableIds.includes(b.id));
+  const bookingPayload = deletedBookings.map(booking => ({
+    bookingId: booking.id,
+    reference_code: booking.reference_code,
+    customer_name: booking.customer_name,
+    booking_date: booking.booking_date,
+    booking_time: booking.booking_time || booking.time_slot,
+    court: booking.court || booking.court_name,
+    amount: booking.price || booking.rate
+  }));
+
+  await addAdminLog(
+    'deleted',
+    'Booking group deleted',
+    `Deleted ${deletedBookings.length} booking slot(s) from group ${group.reference_code || 'N/A'}.`,
+    {
+      bookingIds: deletableIds,
+      bookings: bookingPayload,
+      reference_code: group.reference_code,
+      customer_name: group.customer_name,
+      booking_date: deletedBookings[0]?.booking_date || null,
+      booking_time: deletedBookings[0]?.booking_time || deletedBookings[0]?.time_slot || null,
+      court: deletedBookings[0]?.court || deletedBookings[0]?.court_name || null,
+      amount: deletedBookings[0]?.price || deletedBookings[0]?.rate || null
+    }
+  );
   showToast('Booking group deleted successfully');
   selectedBookingIds.clear();
   await loadBookings();
@@ -1811,7 +3542,7 @@ function copyBookingConfirmationText(group) {
   const message =
     `BOOKING CONFIRMATION\n\n` +
     `Hello ${customerName},\n\n` +
-    `Thank you for booking with DACI Pickle Hub! Your reservation has been successfully confirmed. ✅\n\n` +
+    `Thank you for booking with Daci Pickle Hub! Your reservation has been successfully confirmed. âœ…\n\n` +
     `ðŸ“Œ Booking Reference: ${bookingReference}\n` +
     `ðŸ’³ Total Paid: ${totalPaid}\n` +
     `ðŸ“… Date: ${formattedDates}\n\n` +
@@ -1835,6 +3566,14 @@ async function confirmBookingViaMessenger(group) {
   const referenceCode = group.reference_code;
   if (!referenceCode) {
     showToast('No reference code found');
+    return;
+  }
+
+  const conflicts = findBookingConflicts(allBookings, group.bookings);
+  if (conflicts.length > 0) {
+    const conflict = conflicts[0];
+    const conflictReference = conflict.reference_code || 'another booking';
+    showToast(`Cannot confirm: this slot is already booked (${conflictReference}).`);
     return;
   }
 
@@ -1885,21 +3624,36 @@ async function confirmBookingViaMessenger(group) {
       return `📅 ${formattedDate}\n${courtLines}`;
     }).join('\n\n');
 
-    const confirmationText = `BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for booking with DACI Pickle Hub! Your reservation has been successfully confirmed. ✅\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Paid: ${totalPaid}\n\n${dateBookingLines}\n\nThank you for booking with us! Your reservation has been successfully confirmed.`;
+    const confirmationText = `BOOKING CONFIRMATION\n\nHello ${customerName},\n\nThank you for booking with Daci Pickle Hub! Your reservation has been successfully confirmed. ✅\n\n📌 Booking Reference: ${bookingReference}\n💳 Total Paid: ${totalPaid}\n\n${dateBookingLines}\n\nThank you for booking with us! Your reservation has been successfully confirmed.`;
 
     // Store the text in a global variable for copying later
     window.currentConfirmationText = confirmationText;
     
+    const currentAdmin = getCurrentAdmin();
+    const confirmedBy = currentAdmin?.name || currentAdmin?.username || 'admin';
+    const confirmedAt = new Date().toISOString();
+
     // Update booking status to "paid" in Supabase
     if (group.ids && group.ids.length > 0 && supabaseClient) {
-      const { error } = await supabaseClient
+      const { data, error } = await supabaseClient
         .from('bookings')
-        .update({ status: 'paid' })
-        .in('id', group.ids);
+        .update({
+          status: 'paid',
+          confirmed_by: confirmedBy,
+          confirmed_at: confirmedAt
+        })
+        .in('id', group.ids)
+        .in('status', ['pending', 'unpaid'])
+        .select();
 
       if (error) {
         console.error('Error updating booking status:', error);
-        showToast('Warning: Could not update booking status');
+        showToast(`Could not confirm booking: ${error.message}. Check the Supabase booking schema.`);
+        return;
+      } else if (!data || data.length === 0) {
+        console.log('Booking confirmation was already processed by another admin');
+        showToast('This booking was already confirmed by another admin');
+        return;
       } else {
         console.log('Booking status updated to paid');
       }
@@ -1927,39 +3681,16 @@ function copyConfirmationText() {
     showToast('No confirmation text to copy');
     return;
   }
-  
-  navigator.clipboard.writeText(text).then(() => {
-    showToast('Booking info copied to clipboard!');
-    
-    // Close the modal
-    closeBookingConfirmationModal();
-    
-    // Detect if mobile device
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    
-    if (isMobile) {
-      // On mobile, try to open Business Suite app or Messenger
-      // For iOS
-      if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
-        window.location.href = 'fb://'; // Opens Facebook app
-      } 
-      // For Android
-      else {
-        window.location.href = 'fb://'; // Opens Facebook app
-      }
-      
-      // Fallback to web after a delay if app doesn't open
-      setTimeout(() => {
-        window.open('https://business.facebook.com/latest/inbox/messenger', '_blank');
-      }, 1500);
-    } else {
-      // On desktop, open the web URL
-      window.open('https://business.facebook.com/latest/inbox/messenger', '_blank');
-    }
-  }).catch(err => {
-    console.error('Failed to copy:', err);
-    showToast('Failed to copy booking info');
-  });
+
+  navigator.clipboard.writeText(text)
+    .then(() => {
+      showToast('Booking info copied to clipboard!');
+      closeBookingConfirmationModal();
+    })
+    .catch(err => {
+      console.error('Failed to copy:', err);
+      showToast('Failed to copy booking info');
+    });
 }
 
 function openTodayModal() {
@@ -2016,6 +3747,9 @@ function closeTodayModal() {
 function logout() {
   if (confirm('Are you sure you want to logout?')) {
     sessionStorage.removeItem('adminToken');
+    sessionStorage.removeItem('adminProfile');
+    localStorage.removeItem('adminToken');
+    localStorage.removeItem('adminProfile');
     window.location.href = 'index.html';
   }
 }
@@ -2033,6 +3767,7 @@ function showToast(message) {
 // Close modal on escape key
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    closePosSetupModal();
     closeEditModal();
     closeReceiptViewer();
     closeBookingDetails();
@@ -2040,7 +3775,3 @@ document.addEventListener('keydown', (e) => {
     closeCalendarModal();
   }
 });
-
-
-
-
