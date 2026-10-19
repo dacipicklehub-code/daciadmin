@@ -342,13 +342,8 @@
 <div class="toast" id="toast"></div>
 
 <script>
-  const ADMINS = [
-    { name: 'Cody', password: 'cadmin123' },
-    { name: 'Akem', password: 'aadmin123' },
-    { name: 'Philip', password: 'padmin123' },
-    { name: 'Kat', password: 'kadmin123' },
-    { name: 'Grace', password: 'gadmin123' }
-  ];
+  const ADMIN_PASSWORD = 'Admin123';
+  const ADMIN_PROFILE = { name: 'Admin' };
 
   function persistAdminSession(profile, rememberMe) {
     const token = 'admin_' + Date.now().toString(36);
@@ -379,12 +374,10 @@
     const rememberMe = document.getElementById('rememberMe').checked;
     const errorMessage = document.getElementById('errorMessage');
 
-    const matchedAdmin = ADMINS.find(admin => admin.password === password);
+    if (password === ADMIN_PASSWORD) {
+      persistAdminSession(ADMIN_PROFILE, rememberMe);
 
-    if (matchedAdmin) {
-      persistAdminSession({ name: matchedAdmin.name, password: matchedAdmin.password }, rememberMe);
-
-      showToast(`✅ Welcome ${matchedAdmin.name}! Redirecting...`);
+      showToast(`✅ Welcome ${ADMIN_PROFILE.name}! Redirecting...`);
       setTimeout(() => {
         window.location.href = 'admin-dashboard.html';
       }, 500);
